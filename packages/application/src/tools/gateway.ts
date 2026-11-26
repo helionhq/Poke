@@ -11,8 +11,20 @@ import type {
 } from "@poke/domain";
 import { DomainError } from "@poke/domain";
 import type { SecretRedactor } from "./redactor.js";
+import type { SecretResolver } from "./secrets.js";
 
 export type ToolProfile = "poke" | "executor" | "sidechat";
+
+export interface RegisterOptions {
+  /**
+   * Fill in vault placeholders before the tool runs. Only for tools that act outside Poke
+   * (Executor calls, the browser, HTTP): a tool that passes text on to a model, such as
+   * send_to_agent, must keep the placeholders.
+   */
+  resolveSecrets?: boolean;
+  /** Recorded as "Used by" on the vault entries the tool used. */
+  usedBy?: string;
+}
 
 export interface ToolHandler<A = unknown> {
   spec: ToolSpec;
@@ -43,22 +55,31 @@ export const json = (value: unknown): ToolResultData => text(JSON.stringify(valu
 export class ToolGateway {
   readonly #handlers = new Map<string, ToolHandler>();
   readonly #profiles = new Map<ToolProfile, Set<string>>();
+  readonly #options = new Map<string, RegisterOptions>();
   readonly interceptor: ToolInterceptor;
 
   constructor(
     private readonly redactor: SecretRedactor,
     private readonly log: Logger,
+    private readonly resolver?: SecretResolver,
   ) {
     this.interceptor = {
-      prepare: async (_name, args) => ({ args, release: () => {} }),
+      // The runtimes' own tools (bash, write, edit): placeholders are filled in at execution.
+      prepare: async (name, args, agent) =>
+        this.resolver ? this.resolver.prepare(name, args, agent, name) : { args, release: () => {} },
       redact: (value) => this.redactor.redact(value),
       observe: (event) => this.#observe(event),
     };
   }
 
-  register(tool: ToolHandler<never> | ToolHandler<unknown>, profiles: ToolProfile[]): void {
+  register(
+    tool: ToolHandler<never> | ToolHandler<unknown>,
+    profiles: ToolProfile[],
+    options: RegisterOptions = {},
+  ): void {
     const entry = tool as ToolHandler;
     this.#handlers.set(entry.spec.name, entry);
+    this.#options.set(entry.spec.name, options);
     for (const profile of profiles) {
       let set = this.#profiles.get(profile);
       if (!set) this.#profiles.set(profile, (set = new Set()));
@@ -84,8 +105,15 @@ export class ToolGateway {
     if (!tool || !this.#profiles.get(profile)?.has(name))
       return text(`There's no tool called ${name} here.`, true);
     const started = Date.now();
+    const options = this.#options.get(name) ?? {};
+    let release = () => {};
     try {
-      const parsed = tool.parse(args);
+      let parsed = tool.parse(args);
+      if (options.resolveSecrets && this.resolver) {
+        const prepared = this.resolver.prepare(name, parsed, ctx.agent, options.usedBy);
+        parsed = prepared.args;
+        release = prepared.release;
+      }
       const result = await tool.run(parsed, ctx);
       this.log.debug(
         { tool: name, agent: describe(ctx.agent), ms: Date.now() - started, isError: result.isError },
@@ -104,6 +132,8 @@ export class ToolGateway {
         );
       }
       return text(this.redactor.redact(message), true);
+    } finally {
+      release();
     }
   }
 

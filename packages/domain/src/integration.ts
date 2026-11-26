@@ -58,9 +58,19 @@ export interface ApprovalRequest {
   status: ApprovalStatus;
   /** Set when an always-allow rule resolved it. */
   ruleId?: string;
+  /**
+   * The block it is shown as (section 12): a send is a `draft`, a booking or purchase an
+   * `action`, anything else a `tool_approval` built from the fields above.
+   */
+  presentation?: ApprovalPresentation;
+  /** The quiet "Always allow …" option, when one makes sense. */
+  offer?: { description: string; constraint?: unknown };
   createdAt: number;
   decidedAt?: number;
 }
+
+export type ApprovalPresentation =
+  { kind: "draft"; props: Record<string, unknown> } | { kind: "action"; props: Record<string, unknown> };
 
 /** "Always allow refunds under $100": Executor-gated tools only. */
 export interface ApprovalRule {

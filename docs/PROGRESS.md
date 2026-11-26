@@ -8,8 +8,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 2 | Server core: SQLite + migrations, thread/messages/events with seq, WS resume, attachments, pairing, admin socket, minimal CLI | ✅ done |
 | 3 | Runtimes: Pi Durable executors, Claude Agent SDK, model registry, `poke login` / `poke model`, traces, compaction, side chats | ✅ done |
 | 4 | Blocks: catalog + `card`, state machines, actions API, agent tools, `ask_poke` parking | ✅ done |
-| 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | ⏳ next |
-| 6 | Integrations: Executor bridge, Keenable, browse, local MCP | |
+| 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | ✅ done |
+| 6 | Integrations: Executor bridge, Keenable, browse, local MCP | ⏳ next |
 | 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | |
 | 8 | Routines + skills + notifications | |
 | 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | |
@@ -120,3 +120,25 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   end to end (the value appears nowhere but the vault), expiry on cancel, needs with no Poke model,
   choices, `<block_action>` for actions, drafts and cards, and the actions API over HTTP with a real
   vault (idempotency, 400/404/409).
+
+### Milestone 5 — vault and approvals
+- The vault (encrypted at rest since milestone 3) is now used without being seen. `SecretResolver`
+  fills `{{vault:name.field}}` placeholders in at execution: Pi's `write` and `edit` get the values,
+  `bash` gets quoted environment variables, and gateway tools opt in with `resolveSecrets`. Entries
+  are marked used afterwards; one-time codes go after one use, or after 10 minutes (a sweep runs every
+  minute).
+- Redaction leaves `[vault:<entry>]` / `[vault:system]`.
+- Face ID, checked on the server: an Ed25519 key enrolled at pairing and a signed single-use challenge
+  per vault action. Vault routes: challenge, list, add, edit, delete, reveal.
+- `ApprovalService`: the single gate for Executor-paused calls, always-allow rules with JSON-logic
+  conditions, decisions logged with an arguments hash, presentation as a draft, an action card or a
+  tool approval, and expiry with the task. Approval needs become blocks under Poke's reply, like
+  secret and connection needs. Routes for pending approvals and rules.
+- Migration 3: `devices.vault_key`, `approvals.presentation` and `approvals.offer`.
+- Waiting on milestone 6: Executor's elicitations calling `gate`, and resuming or declining Executor
+  in its `run`. Waiting on milestone 9: the app's key enrolment and signing (docs/IOS.md).
+- Tests: 116 in total, including the resolver (values, shell quoting, unknown, missing and used-up
+  secrets), redaction labels, JSON-logic, Pi write with a placeholder, gated calls end to end (park,
+  block, allow with always, rule match, a send as an edited draft, expiry on cancel), and over HTTP
+  the vault's Face ID proofs (missing, wrong purpose, replayed, forged, admin socket) and placeholder
+  filling through the real vault.

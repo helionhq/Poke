@@ -1,3 +1,4 @@
+import { generateKeyPairSync, sign } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +10,7 @@ import type {
   SessionSpec,
   TurnInput,
 } from "@poke/domain";
+import { text } from "@poke/application";
 import type { FastifyInstance } from "fastify";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { buildApp } from "./http/app.js";
@@ -224,7 +226,7 @@ describe("agent stack over HTTP", () => {
       .filter((m) => m.role === "poke")
       .at(-1)!;
     const text = JSON.stringify(leak.parts);
-    expect(text).toContain("[redacted]");
+    expect(text).toContain("[vault:system]");
     expect(text).not.toContain("supersecretvalue99");
   });
 
@@ -269,7 +271,7 @@ describe("agent stack over HTTP", () => {
     const again = await openModelStack(kernel, { validateLogins: false });
     expect(again.logins.secretFor("qwen-token-plan-individual-cn")).toBeUndefined();
     expect(again.logins.secretFor("qwen-token-plan-individual")).toBe("sk-sp-keepme123456");
-    expect(again.secrets()).toContain("sk-sp-keepme123456");
+    expect(again.secrets()).toContainEqual({ name: "system", value: "sk-sp-keepme123456" });
     again.close();
     stack = await openAgentStack(kernel, {
       runtimes: { "claude-agent-sdk": echo, "pi-ai": echo },
@@ -343,7 +345,7 @@ describe("agent stack over HTTP", () => {
     });
     expect(stack.vault.resolve("openweather", "api_key")).toBe(key);
     // From now on tool output is redacted against it.
-    await until(() => stack.secrets().includes(key));
+    await until(() => stack.secrets().some((s) => s.name === "openweather" && s.value === key));
     const retry = await publicApp.inject({
       method: "POST",
       url,
@@ -358,5 +360,173 @@ describe("agent stack over HTTP", () => {
       payload: { action: "save", payload: { value: key }, clientActionId: "save-0002" },
     });
     expect(twice.statusCode).toBe(409);
+  });
+
+  it("opens the vault only with a fresh Face ID proof for that exact action", async () => {
+    const { publicKey, privateKey } = generateKeyPairSync("ed25519");
+    const vaultKey = publicKey.export({ format: "jwk" }).x!;
+    const { code } = kernel.devices.issuePairingCode();
+    const paired = await publicApp.inject({
+      method: "POST",
+      url: "/v1/pair",
+      payload: { code, deviceName: "iPhone", platform: "ios", vaultKey },
+    });
+    expect(paired.json().device).toMatchObject({ vault: true });
+    expect(JSON.stringify(paired.json())).not.toContain(vaultKey);
+    const phone = { authorization: `Bearer ${paired.json().token as string}` };
+    const prove = async (action: string, name?: string) => {
+      const challenge = (
+        await publicApp.inject({
+          method: "POST",
+          url: "/v1/vault/challenge",
+          headers: phone,
+          payload: { action, ...(name ? { name } : {}) },
+        })
+      ).json() as { challengeId: string; message: string };
+      const signature = sign(null, Buffer.from(challenge.message, "utf8"), privateKey).toString("base64url");
+      return { ...phone, "x-poke-vault-proof": `${challenge.challengeId}.${signature}` };
+    };
+
+    // No proof, a device without a key, and the admin socket are all refused.
+    expect((await publicApp.inject({ method: "GET", url: "/v1/vault", headers: phone })).statusCode).toBe(
+      401,
+    );
+    expect(
+      (
+        await publicApp.inject({
+          method: "POST",
+          url: "/v1/vault/challenge",
+          headers: auth(),
+          payload: { action: "list" },
+        })
+      ).statusCode,
+    ).toBe(403);
+    expect((await adminApp.inject({ method: "GET", url: "/v1/vault" })).statusCode).toBe(403);
+
+    const secret = "ghp_abcdef1234567890XYZ";
+    const added = await publicApp.inject({
+      method: "POST",
+      url: "/v1/vault/entries",
+      headers: await prove("add", "github"),
+      payload: { name: "github", kind: "api_key", fields: { user: "arham" }, secrets: { token: secret } },
+    });
+    expect(added.statusCode).toBe(200);
+    expect(added.body).not.toContain(secret);
+    expect(added.json().entry).toMatchObject({
+      name: "github",
+      secretFields: ["token"],
+      fields: { user: "arham" },
+    });
+
+    const list = await publicApp.inject({ method: "GET", url: "/v1/vault", headers: await prove("list") });
+    expect(list.json().entries.map((e: { name: string }) => e.name)).toEqual(["github"]);
+    expect(list.body).not.toContain(secret);
+
+    // A proof is for one action on one entry, once.
+    const forOther = await prove("reveal", "other");
+    const wrong = await publicApp.inject({
+      method: "POST",
+      url: "/v1/vault/entries/github/reveal",
+      headers: forOther,
+    });
+    expect(wrong.statusCode).toBe(401);
+    const proof = await prove("reveal", "github");
+    const reveal = await publicApp.inject({
+      method: "POST",
+      url: "/v1/vault/entries/github/reveal",
+      headers: proof,
+    });
+    expect(reveal.json()).toEqual({ secrets: { token: secret } });
+    expect(reveal.headers["cache-control"]).toBe("no-store");
+    const replay = await publicApp.inject({
+      method: "POST",
+      url: "/v1/vault/entries/github/reveal",
+      headers: proof,
+    });
+    expect(replay.statusCode).toBe(401);
+    const forged = {
+      ...proof,
+      "x-poke-vault-proof": `${(await prove("reveal", "github"))["x-poke-vault-proof"].split(".")[0]}.AAAA`,
+    };
+    expect(
+      (await publicApp.inject({ method: "POST", url: "/v1/vault/entries/github/reveal", headers: forged }))
+        .statusCode,
+    ).toBe(401);
+
+    const edited = await publicApp.inject({
+      method: "PATCH",
+      url: "/v1/vault/entries/github",
+      headers: await prove("edit", "github"),
+      payload: { description: "Poke's GitHub token" },
+    });
+    expect(edited.json().entry).toMatchObject({ description: "Poke's GitHub token" });
+    const deleted = await publicApp.inject({
+      method: "DELETE",
+      url: "/v1/vault/entries/github",
+      headers: await prove("delete", "github"),
+    });
+    expect(deleted.json()).toEqual({ deleted: true });
+    expect(stack.vault.get("github")).toBeUndefined();
+  });
+
+  it("fills placeholders only for tools that act outside Poke, and shows [vault:name] back", async () => {
+    const secret = "ghp_abcdef1234567890XYZ";
+    stack.vault.put({ name: "github", kind: "api_key", secrets: { token: secret } });
+    await until(() => stack.secrets().some((s) => s.name === "github"));
+    const seen: unknown[] = [];
+    const echo = (name: string) => ({
+      spec: {
+        name,
+        description: name,
+        inputSchema: { type: "object" },
+        loading: "always" as const,
+        callers: ["model" as const],
+        replay: "unsafe" as const,
+      },
+      parse: (args: unknown) => args as { header: string },
+      run: (args: { header: string }) => {
+        seen.push(args.header);
+        return text(`sent ${args.header}`);
+      },
+    });
+    stack.gateway.register(echo("http_get"), ["executor"], { resolveSecrets: true, usedBy: "github-api" });
+    stack.gateway.register(echo("note_for_poke"), ["executor"]);
+    const ctx = {
+      agent: { kind: "executor" as const, taskId: "tsk_x" },
+      callId: "h1",
+      signal: new AbortController().signal,
+    };
+    const args = { header: "Bearer {{vault:github.token}}" };
+
+    const out = await stack.gateway.invoke("executor", "http_get", args, ctx);
+    expect(seen.at(-1)).toBe(`Bearer ${secret}`);
+    expect(out.output[0]).toEqual({ type: "text", text: "sent Bearer [vault:github]" });
+    expect(stack.vault.get("github")!.usedBy).toEqual(["github-api"]);
+
+    await stack.gateway.invoke("executor", "note_for_poke", args, ctx);
+    expect(seen.at(-1)).toBe("Bearer {{vault:github.token}}");
+
+    const missing = await stack.gateway.invoke(
+      "executor",
+      "http_get",
+      { header: "{{vault:gitlab.token}}" },
+      ctx,
+    );
+    expect(missing).toMatchObject({ isError: true });
+    expect(missing.output[0]!.type === "text" && missing.output[0]!.text).toContain(
+      "no vault entry called gitlab",
+    );
+
+    // Bash and friends go through the interceptor: bash gets an env var, never the value.
+    const prepared = await stack.gateway.interceptor.prepare(
+      "bash",
+      { command: "gh auth login --with-token <<< {{vault:github.token}}" },
+      ctx.agent,
+    );
+    expect(prepared.args).toEqual({
+      command: 'gh auth login --with-token <<< "${POKE_SECRET_GITHUB_TOKEN}"',
+    });
+    expect(prepared.env).toEqual({ POKE_SECRET_GITHUB_TOKEN: secret });
+    prepared.release();
   });
 });

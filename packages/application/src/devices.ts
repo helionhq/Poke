@@ -52,7 +52,7 @@ export class DeviceService {
     return { code, expiresAt };
   }
 
-  pair(input: { code: string; deviceName: string; platform: Device["platform"] }): {
+  pair(input: { code: string; deviceName: string; platform: Device["platform"]; vaultKey?: string }): {
     token: string;
     device: Device;
   } {
@@ -71,7 +71,12 @@ export class DeviceService {
       );
     }
     this.devices.savePairingCode({ ...record, usedAt: now, attempts: record.attempts + 1 });
-    return this.#createDevice({ name: input.deviceName, platform: input.platform, scope: "full" });
+    return this.#createDevice({
+      name: input.deviceName,
+      platform: input.platform,
+      scope: "full",
+      ...(input.vaultKey ? { vaultKey: input.vaultKey } : {}),
+    });
   }
 
   /** A scoped token that can only POST /v1/share (for the iOS Shortcut). */
@@ -107,7 +112,12 @@ export class DeviceService {
     return revoked;
   }
 
-  #createDevice(input: { name: string; platform: Device["platform"]; scope: Device["scope"] }) {
+  #createDevice(input: {
+    name: string;
+    platform: Device["platform"];
+    scope: Device["scope"];
+    vaultKey?: string;
+  }) {
     const token = `pk_${this.crypto.randomToken(32)}`;
     const device: Device = {
       id: this.ids.next("dev"),
@@ -116,6 +126,7 @@ export class DeviceService {
       scope: input.scope,
       tokenHash: this.crypto.sha256Hex(token),
       createdAt: this.clock.now(),
+      ...(input.vaultKey ? { vaultKey: input.vaultKey } : {}),
     };
     this.devices.save(device);
     return { token, device };
@@ -126,8 +137,8 @@ function normalizeCode(code: string): string {
   return code.toUpperCase().replace(/[^A-Z0-9]/g, "");
 }
 
-/** Strip the token hash before a device goes over the wire. */
-export function publicDevice(device: Device): Omit<Device, "tokenHash"> {
-  const { tokenHash: _hash, ...rest } = device;
-  return rest;
+/** A device as clients see it: no token hash, and whether it can open the vault. */
+export function publicDevice(device: Device): Omit<Device, "tokenHash" | "vaultKey"> & { vault: boolean } {
+  const { tokenHash: _hash, vaultKey, ...rest } = device;
+  return { ...rest, vault: Boolean(vaultKey) };
 }

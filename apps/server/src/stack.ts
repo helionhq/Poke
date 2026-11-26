@@ -3,12 +3,15 @@ import { join } from "node:path";
 import type { PersonaSlots } from "@poke/agent-core";
 import {
   AgentsService,
+  ApprovalService,
   BlockService,
   InteractionOrchestrator,
   LoginService,
   type LoginValidator,
   ModelService,
+  type LiveSecret,
   SecretRedactor,
+  SecretResolver,
   SideChatService,
   ToolGateway,
 } from "@poke/application";
@@ -42,7 +45,7 @@ export interface ModelStack {
   models: ModelService;
   piModels: ReturnType<typeof createPiModels>;
   /** Every live secret value, for redaction. Refreshed whenever the vault changes. */
-  secrets(): string[];
+  secrets(): LiveSecret[];
   claudeConfigDir: string;
   close(): void;
 }
@@ -58,7 +61,7 @@ export interface ModelStackOptions {
 export async function openModelStack(kernel: Kernel, options: ModelStackOptions = {}): Promise<ModelStack> {
   const { paths } = kernel;
   ensureMasterKey(paths.masterKey);
-  let values: string[] = [];
+  let values: LiveSecret[] = [];
   const vault: SodiumVault = await openVault({
     path: paths.vaultDb,
     masterKey: loadMasterKey(paths.masterKey),
@@ -66,16 +69,15 @@ export async function openModelStack(kernel: Kernel, options: ModelStackOptions 
     onChange: () => refresh(),
   });
   // Every live secret value, decrypted once per vault change rather than on every redaction.
+  // Entry secrets show up as [vault:<entry>], provider credentials as [vault:system].
   function refresh(): void {
-    const system = vault.system.keys().map((key) => vault.system.get(key) ?? "");
-    const entries = vault.list().flatMap((entry) => {
-      try {
-        return Object.values(vault.reveal(entry.name));
-      } catch {
-        return [];
-      }
-    });
-    values = [...system, ...entries].filter((v) => v.length > 0);
+    values = vault
+      .liveSecrets()
+      .filter((s) => s.value.length > 0)
+      .map((s) => ({
+        name: s.name.startsWith("system:") ? "system" : s.name.slice(0, s.name.lastIndexOf(".")),
+        value: s.value,
+      }));
   }
   refresh();
 
@@ -129,6 +131,7 @@ export interface AgentStack extends ModelStack {
   host: PiHost;
   agents: AgentsService;
   blocks: BlockService;
+  approvals: ApprovalService;
   poke: InteractionOrchestrator;
   sidechats: SideChatService;
   persona(): PersonaSlots;
@@ -146,7 +149,8 @@ export interface AgentStackOptions extends ModelStackOptions {
 export async function openAgentStack(kernel: Kernel, options: AgentStackOptions = {}): Promise<AgentStack> {
   const stack = await openModelStack(kernel, { claudeLive: true, ...options });
   const { paths, settings, log } = kernel;
-  const gateway = new ToolGateway(new SecretRedactor(stack.secrets), log);
+  const redactor = new SecretRedactor(stack.secrets);
+  const gateway = new ToolGateway(redactor, log, new SecretResolver(stack.vault));
   const persona = (): PersonaSlots => {
     const homeCity = settings.get("profile.homeCity");
     return {
@@ -186,6 +190,15 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     persona,
     workspace: paths.workspace,
   });
+  const approvals = new ApprovalService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    ids: kernel.ids,
+    clock: kernel.clock,
+    log,
+    agents,
+    redact: (value) => redactor.redactValue(value),
+  });
   const blocks = new BlockService({
     repos: kernel.db,
     hub: kernel.hub,
@@ -195,6 +208,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     thread: kernel.thread,
     vault: stack.vault,
     agents,
+    approvals,
   });
   const poke = new InteractionOrchestrator({
     repos: kernel.db,
@@ -231,8 +245,21 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     workspace: paths.workspace,
     skillsDir: paths.skills,
   });
+  // One-time codes are wiped 10 minutes after they were saved, used or not.
+  let sweeper: { cancel(): void } | undefined;
+  const sweep = () => {
+    try {
+      const wiped = stack.vault.sweep(kernel.clock.now());
+      if (wiped.length) log.info({ count: wiped.length }, "wiped expired one-time codes");
+    } catch (error) {
+      log.warn({ err: error }, "couldn't sweep the vault");
+    }
+    sweeper = kernel.timers.setTimeout(sweep, 60_000);
+  };
+  sweep();
   // Tools first, then executors pick up where they left off before the restart.
   blocks.start();
+  approvals.start();
   poke.start();
   await agents.resume().catch((error: unknown) => log.error({ err: error }, "couldn't resume agents"));
   return {
@@ -241,10 +268,12 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     host,
     agents,
     blocks,
+    approvals,
     poke,
     sidechats,
     persona,
     async shutdown() {
+      sweeper?.cancel();
       await sidechats.closeAll();
       await poke.close();
       await host.close();

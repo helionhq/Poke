@@ -203,3 +203,34 @@ POST /v1/blocks/:id/actions ──────┴─ BlockService.act ─ @poke/
 |---|---|---|
 | `GET /v1/blocks/:id` | device | one block |
 | `POST /v1/blocks/:id/actions` | device | act on a block: `{action, payload?, clientActionId}` → `{block, result?, duplicate}` |
+
+## Vault and approvals (milestone 5)
+
+```
+tool call ─ ToolGateway ─┬─ parse
+                         ├─ SecretResolver (resolveSecrets tools; Pi bash/write/edit via the interceptor)
+                         ├─ run ── Executor-gated? ── ApprovalService.gate ─┬─ rule matches → run
+                         │                                                  └─ park on an approval need
+                         └─ SecretRedactor → [vault:name]
+approval need → Poke's reply + draft / action / tool_approval block → BlockService.act
+             → ApprovalService.decide → the parked call resumes
+```
+
+- `SecretResolver` (application) reads the vault port: values for arguments, environment variables
+  for shells, `markUsed` after the call.
+- `ApprovalService` stores requests and rules (`approvals`, `approval_rules`, `approval_log`),
+  matches rules with `logic.ts`, and resumes the parked agent with
+  `{allowed, approvalId, ruleId?, note?, final?}`.
+- `VaultProofs` (server infra) issues and checks the Face ID challenges for the vault routes.
+- Migration 3 adds `devices.vault_key` and the approvals' `presentation` and `offer`.
+
+### API (milestone 5 additions)
+
+| Route | Auth | What |
+|---|---|---|
+| `POST /v1/vault/challenge` | device with an enrolled key | a challenge for `{action, name?}` |
+| `GET /v1/vault` | device + proof | entries, metadata only |
+| `POST /v1/vault/entries`, `PATCH/DELETE /v1/vault/entries/:name` | device + proof | add, edit, delete |
+| `POST /v1/vault/entries/:name/reveal` | device + proof | the entry's secret values |
+| `GET /v1/approvals` | device | approvals waiting for an OK |
+| `GET /v1/approvals/rules`, `DELETE /v1/approvals/rules/:id` | device | always-allow rules |

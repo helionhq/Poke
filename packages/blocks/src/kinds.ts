@@ -79,8 +79,9 @@ export const draft = defineKind<DraftProps>({
   props: DraftProps,
   initial: "idle",
   // "editing" is local to the app while the caret is in the body; the server only stores idle/sent.
-  states: ["idle", "editing", "sent"],
-  terminal: ["sent"],
+  // "expired": a send waiting for an OK whose agent stopped waiting.
+  states: ["idle", "editing", "sent", "expired"],
+  terminal: ["sent", "expired"],
   actions: {
     edit: {
       from: ["idle", "editing"],
@@ -107,11 +108,19 @@ export const draft = defineKind<DraftProps>({
       from: ["idle", "editing"],
       by: "user",
       payload: empty,
-      apply: ({ props }) => {
+      apply: ({ props, resolution }) => {
         if (!props.primary) throw new BlockActionError("This draft has no action to run");
-        return { state: "sent", resolution: { action: "primary", label: props.primary.label } };
+        return {
+          state: "sent",
+          resolution: {
+            action: "primary",
+            label: props.primary.label,
+            ...(resolution?.edited ? { edited: true } : {}),
+          },
+        };
       },
     },
+    expire: { from: ["idle", "editing"], by: "system", payload: empty, apply: () => ({ state: "expired" }) },
   },
   fallbackText: ({ props, state }) =>
     [
@@ -142,8 +151,8 @@ export const action = defineKind<ActionProps>({
   v: 1,
   props: ActionProps,
   initial: "pending",
-  states: ["pending", "confirmed", "changed", "cancelled"],
-  terminal: ["confirmed", "changed", "cancelled"],
+  states: ["pending", "confirmed", "changed", "cancelled", "expired"],
+  terminal: ["confirmed", "changed", "cancelled", "expired"],
   actions: {
     confirm: {
       from: ["pending"],
@@ -166,6 +175,7 @@ export const action = defineKind<ActionProps>({
       payload: empty,
       apply: () => ({ state: "cancelled", resolution: { decision: "cancelled" } }),
     },
+    expire: { from: ["pending"], by: "system", payload: empty, apply: () => ({ state: "expired" }) },
   },
   fallbackText: ({ props, state }) =>
     [

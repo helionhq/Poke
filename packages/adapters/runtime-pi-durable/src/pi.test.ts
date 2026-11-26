@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -156,6 +156,39 @@ describe("executors", () => {
 
     await runtime.message(runtimeRef, "One more thing.", "followup");
     await until(() => events.filter((e) => e.type === "report").length === 2 || undefined);
+    await runtime.close();
+  });
+
+  it("fills vault placeholders into write at execution, keeping them in the transcript", async () => {
+    const runtime = new PiExecutorRuntime(host);
+    const events = collect(runtime);
+    const released: string[] = [];
+    const filling: ToolInterceptor = {
+      ...interceptor,
+      prepare: async (name, args) => ({
+        args: JSON.parse(JSON.stringify(args).replace("{{vault:demo.token}}", "SECRET-value-1")),
+        release: () => released.push(name),
+      }),
+    };
+    faux.setResponses([
+      fauxAssistantMessage(
+        [fauxToolCall("write", { path: "note.txt", content: "token={{vault:demo.token}}" }, { id: "w1" })],
+        { stopReason: "toolUse" },
+      ),
+      fauxAssistantMessage([fauxToolCall("read", { path: "note.txt" }, { id: "r1" })], {
+        stopReason: "toolUse",
+      }),
+      fauxAssistantMessage("Done."),
+    ]);
+    await runtime.start({ ...executorSpec("tsk_w"), interceptor: filling, firstTurn: "Write the note." });
+    await until(() => events.find((e) => e.type === "report"));
+    expect(readFileSync(join(dir, "note.txt"), "utf8")).toBe("token=SECRET-value-1");
+    expect(released).toEqual(["write"]);
+    const started = events.find((e) => e.type === "step.started" && e.name === "write");
+    expect(JSON.stringify(started)).toContain("{{vault:demo.token}}");
+    // What read returned to the model was redacted.
+    const read = events.find((e) => e.type === "step.completed" && e.name === "read");
+    expect(JSON.stringify(read)).not.toContain("SECRET-value-1");
     await runtime.close();
   });
 

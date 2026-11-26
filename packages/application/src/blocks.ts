@@ -28,9 +28,51 @@ export interface ConnectionStarter {
   start(input: { app: string; kind: "app" | "custom"; blockId: string }): Promise<{ url: string }>;
 }
 
-/** Decides a gated tool call (milestone 5). */
+/** What the user decided about a gated call, from whichever block showed it. */
+export interface ApprovalDecision {
+  allowed: boolean;
+  /** "Always allow …" was ticked. */
+  always?: boolean;
+  /** Asked for a change instead (action card), in their words. */
+  note?: string;
+  /** A draft edited before sending: its final fields. */
+  final?: Record<string, unknown>;
+}
+
+/** Decides a gated tool call (ApprovalService). */
 export interface ApprovalDecider {
-  decide(approvalId: string, decision: "allowed" | "denied", always: boolean): Promise<void>;
+  decide(approvalId: string, decision: ApprovalDecision): Promise<void>;
+}
+
+/** An approval block reaching a final state is the decision. Undefined: not decided yet. */
+function approvalDecision(
+  block: Block,
+  state: string,
+  resolution: Record<string, unknown> | undefined,
+  props: Record<string, unknown> | undefined,
+): ApprovalDecision | undefined {
+  switch (block.kind) {
+    case "tool_approval":
+      if (state === "allowed")
+        return { allowed: true, ...(resolution?.always === true ? { always: true } : {}) };
+      return state === "denied" ? { allowed: false } : undefined;
+    case "action":
+      if (state === "confirmed") return { allowed: true };
+      if (state === "changed" || state === "cancelled")
+        return { allowed: false, ...(typeof resolution?.note === "string" ? { note: resolution.note } : {}) };
+      return undefined;
+    case "draft": {
+      if (state !== "sent") return undefined;
+      const current = props ?? block.props;
+      const edited = block.resolution?.edited === true;
+      const final = Object.fromEntries(
+        ["to", "subject", "body"].flatMap((key) => (current[key] !== undefined ? [[key, current[key]]] : [])),
+      );
+      return { allowed: true, ...(edited ? { final } : {}) };
+    }
+    default:
+      return undefined;
+  }
 }
 
 /** What Poke hears when Arham acts on one of its blocks. */
@@ -109,6 +151,13 @@ export class BlockService {
       if (block.owner.type !== "task") continue;
       const task = this.deps.repos.tasks.get(block.owner.taskId);
       if (!task || task.need?.id !== block.owner.needId) this.#expire(block);
+    }
+    // Approval cards (drafts and action cards too) whose agent no longer waits for that OK.
+    for (const request of this.deps.repos.approvals.pending()) {
+      if (request.requester.kind !== "task") continue;
+      const need = this.deps.repos.tasks.get(request.requester.taskId)?.need;
+      if (need?.kind !== "approval" || need.approvalId !== request.id)
+        this.expireTask(request.requester.taskId);
     }
     this.deps.hub.subscribe((frame) => {
       if (frame.kind !== "event") return;
@@ -192,11 +241,13 @@ export class BlockService {
         const started = await connections.start({ app: props.app, kind: props.kind, blockId: block.id });
         result = { url: started.url };
       }
-      if (block.kind === "tool_approval" && block.owner.type === "approval") {
-        const approvals = this.deps.approvals;
-        if (!approvals) throw new DomainError("unavailable", "Approvals can't be decided here yet");
-        const decision = transition.state === "allowed" ? "allowed" : "denied";
-        await approvals.decide(block.owner.approvalId, decision, resolution?.always === true);
+      if (block.owner.type === "approval") {
+        const decision = approvalDecision(block, transition.state, resolution, transition.props);
+        if (decision) {
+          const approvals = this.deps.approvals;
+          if (!approvals) throw new DomainError("unavailable", "Approvals can't be decided here yet");
+          await approvals.decide(block.owner.approvalId, decision);
+        }
       }
 
       const updated = this.#save(block, {

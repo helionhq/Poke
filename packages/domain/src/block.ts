@@ -28,7 +28,7 @@ export type BlockOwner =
   /** Built by the server from an executor need; the parked task is signalled on resolution. */
   | { type: "task"; taskId: TaskId; needId: string }
   /** An Executor-gated tool call waiting for a decision (any agent). */
-  | { type: "approval"; approvalId: string };
+  | { type: "approval"; approvalId: string; /** The agent waiting on it. */ taskId?: string };
 
 /** A block action already applied, so a retried request (same clientActionId) gets the same answer. */
 export interface BlockActionRecord {

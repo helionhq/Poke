@@ -292,6 +292,11 @@ export const MIGRATIONS: string[] = [
   );
   CREATE INDEX block_actions_block ON block_actions(block_id);
   `,
+  /* 3: vault and approvals (milestone 5) */ `
+  ALTER TABLE devices ADD COLUMN vault_key TEXT;
+  ALTER TABLE approvals ADD COLUMN presentation TEXT;
+  ALTER TABLE approvals ADD COLUMN offer TEXT;
+  `,
 ];
 
 export function migrate(db: SqliteDb): { from: number; to: number } {

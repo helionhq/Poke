@@ -13,6 +13,11 @@ export interface Device {
   createdAt: number;
   lastSeenAt?: number;
   revokedAt?: number;
+  /**
+   * Ed25519 public key (base64url) whose private half the phone keeps behind Face ID. Vault
+   * requests carry a signature made with it. Set at pairing; re-pair to change it.
+   */
+  vaultKey?: string;
 }
 
 export interface PairingCode {

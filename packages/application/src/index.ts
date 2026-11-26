@@ -11,8 +11,17 @@ export {
 } from "./thread.js";
 export { AttachmentService, kindFromMime, safeFileName, MAX_ATTACHMENT_BYTES } from "./attachments.js";
 export { SettingsService } from "./settings.js";
-export { SecretRedactor, secretForms, REDACTED } from "./tools/redactor.js";
-export { ToolGateway, handler, text, json, type ToolHandler, type ToolProfile } from "./tools/gateway.js";
+export { SecretRedactor, secretForms, redactionLabel, REDACTED, type LiveSecret } from "./tools/redactor.js";
+export {
+  ToolGateway,
+  handler,
+  text,
+  json,
+  type RegisterOptions,
+  type ToolHandler,
+  type ToolProfile,
+} from "./tools/gateway.js";
+export { SecretResolver, envName, shellPlaceholders, type PreparedCall } from "./tools/secrets.js";
 export {
   LoginService,
   ModelService,
@@ -38,9 +47,19 @@ export {
   BlockService,
   secretPlaceholder,
   type ApprovalDecider,
+  type ApprovalDecision,
   type BlockActionInput,
   type BlockActionNotice,
   type BlockActionResult,
   type BlocksDeps,
   type ConnectionStarter,
 } from "./blocks.js";
+export {
+  ApprovalService,
+  approvalBlock,
+  argsHash,
+  type ApprovalInput,
+  type ApprovalOutcome,
+  type ApprovalsDeps,
+} from "./approvals.js";
+export { evaluateLogic, isLogic } from "./logic.js";

@@ -9,6 +9,7 @@ import {
 } from "@poke/contracts";
 import type { FastifyInstance } from "fastify";
 import { z } from "zod";
+import { ed25519Key } from "../../infra/vault-proof.js";
 import type { Services } from "../../services.js";
 import { IdParams, openApiDocument, route, type Surface } from "../route.js";
 import { stackStatus } from "../../stack.js";
@@ -35,6 +36,7 @@ export function registerCoreRoutes(app: FastifyInstance, s: Services, surface: S
       summary: "Exchange a pairing code for a device token",
     },
     ({ body }) => {
+      if (body.vaultKey) ed25519Key(body.vaultKey); // a malformed key is a 400, before the code is spent
       const { token, device } = s.devices.pair(body);
       s.log.info({ device: device.id, name: device.name }, "device paired");
       return { token, device: publicDevice(device) };

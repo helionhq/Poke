@@ -1,5 +1,16 @@
 import { z } from "zod";
-import { Attachment, Block, Device, Message, Step, Task, Trace } from "./entities.js";
+import {
+  ApprovalRequest,
+  ApprovalRule,
+  Attachment,
+  Block,
+  Device,
+  Message,
+  Step,
+  Task,
+  Trace,
+  VaultEntry,
+} from "./entities.js";
 
 export const ErrorBody = z.object({
   error: z.object({
@@ -23,6 +34,14 @@ export const PairRequest = z.object({
   code: z.string().min(4).max(64),
   deviceName: z.string().min(1).max(80),
   platform: z.enum(["ios", "web", "cli", "shortcut"]),
+  /**
+   * The phone's Ed25519 public key (32 bytes, base64url) for the vault. Its private half stays in
+   * the Keychain behind Face ID; vault requests are signed with it.
+   */
+  vaultKey: z
+    .string()
+    .regex(/^[A-Za-z0-9_-]{43}$/, "a 32-byte Ed25519 public key in base64url")
+    .optional(),
 });
 export type PairRequest = z.infer<typeof PairRequest>;
 
@@ -139,3 +158,39 @@ export const BlockActionResponse = z.object({
 export type BlockActionResponse = z.infer<typeof BlockActionResponse>;
 
 export const BlockResponse = z.object({ block: Block });
+
+// ── vault (section 10): every call carries a Face ID proof ───────────────────────────────────
+
+export const VaultAction = z.enum(["list", "add", "edit", "delete", "reveal"]);
+const VaultName = z.string().regex(/^[a-z0-9][a-z0-9_.-]{0,63}$/, "lowercase letters, digits, . _ -");
+const FieldName = z.string().regex(/^[a-z][a-z0-9_]{0,31}$/);
+
+/** Ask for a challenge, sign it after Face ID, send it as `X-Poke-Vault-Proof: <id>.<signature>`. */
+export const VaultChallengeRequest = z.object({ action: VaultAction, name: VaultName.optional() });
+export const VaultChallenge = z.object({
+  challengeId: z.string(),
+  nonce: z.string(),
+  expiresAt: z.number(),
+  /** Sign the UTF-8 bytes of this with the device's Ed25519 key. */
+  message: z.string(),
+});
+export const VaultList = z.object({ entries: z.array(VaultEntry) });
+export const VaultAddRequest = z.object({
+  name: VaultName,
+  kind: z.enum(["login", "api_key", "card", "code", "note"]),
+  fields: z.record(FieldName, z.string().max(500)).optional(),
+  secrets: z.record(FieldName, z.string().min(1).max(8192)),
+  description: z.string().max(300).optional(),
+});
+export const VaultEditRequest = z.object({
+  fields: z.record(FieldName, z.string().max(500)).optional(),
+  secrets: z.record(FieldName, z.string().min(1).max(8192)).optional(),
+  description: z.string().max(300).optional(),
+});
+export const VaultEntryResponse = z.object({ entry: VaultEntry });
+export const VaultReveal = z.object({ secrets: z.record(z.string(), z.string()) });
+
+// ── approvals (section 12) ───────────────────────────────────────────────────────────────────
+
+export const ApprovalRuleList = z.object({ rules: z.array(ApprovalRule) });
+export const PendingApprovals = z.object({ approvals: z.array(ApprovalRequest) });

@@ -1,6 +1,18 @@
 /** Secrets shorter than this aren't redacted: they'd match ordinary text. */
 const MIN_SECRET = 6;
-export const REDACTED = "[redacted]";
+/** What a secret is replaced with when its name can't be shown. */
+export const REDACTED = "[vault:secret]";
+
+/** A live secret and the vault name it is shown as: `[vault:resy.login]`. */
+export interface LiveSecret {
+  name: string;
+  value: string;
+}
+
+/** The label a redacted secret leaves behind. Names are vault names, so the label is JSON-safe. */
+export function redactionLabel(name: string): string {
+  return /^[a-z0-9][a-z0-9._-]{0,80}$/i.test(name) ? `[vault:${name}]` : REDACTED;
+}
 
 /** Every form a secret commonly takes in tool output: raw, base64, URL- and JSON-encoded. */
 export function secretForms(secret: string): string[] {
@@ -16,21 +28,21 @@ export function secretForms(secret: string): string[] {
 }
 
 /**
- * Scrubs live secrets from any text before it reaches a model, the transcript, a log or a UI.
- * Longest forms first, so a secret inside a longer encoded form doesn't leave a partial match.
+ * Scrubs live secrets from any text before it reaches a model, the transcript, a log or a UI, and
+ * leaves `[vault:<name>]` in their place (section 10). Longest forms first, so a secret inside a
+ * longer encoded form doesn't leave a partial match.
  */
 export class SecretRedactor {
   #cacheKey = "";
-  #forms: string[] = [];
+  #forms: Array<{ form: string; label: string }> = [];
 
-  constructor(private readonly secrets: () => readonly string[]) {}
+  constructor(private readonly secrets: () => readonly LiveSecret[]) {}
 
   redact(text: string): string {
     if (!text) return text;
-    const forms = this.#currentForms();
     let out = text;
-    for (const form of forms) {
-      if (out.includes(form)) out = out.split(form).join(REDACTED);
+    for (const { form, label } of this.#currentForms()) {
+      if (out.includes(form)) out = out.split(form).join(label);
     }
     return out;
   }
@@ -42,12 +54,19 @@ export class SecretRedactor {
     return redacted === raw ? value : (JSON.parse(redacted) as T);
   }
 
-  #currentForms(): string[] {
+  #currentForms(): Array<{ form: string; label: string }> {
     const secrets = this.secrets();
-    const key = secrets.join("\u0000");
+    const key = secrets.map((s) => `${s.name}\u0001${s.value}`).join("\u0000");
     if (key !== this.#cacheKey) {
       this.#cacheKey = key;
-      this.#forms = [...new Set(secrets.flatMap(secretForms))].sort((a, b) => b.length - a.length);
+      const byForm = new Map<string, string>();
+      for (const secret of secrets) {
+        const label = redactionLabel(secret.name);
+        for (const form of secretForms(secret.value)) if (!byForm.has(form)) byForm.set(form, label);
+      }
+      this.#forms = [...byForm]
+        .map(([form, label]) => ({ form, label }))
+        .sort((a, b) => b.form.length - a.form.length);
     }
     return this.#forms;
   }

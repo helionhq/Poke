@@ -3,13 +3,17 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AgentsService,
+  ApprovalService,
   BlockService,
   InteractionOrchestrator,
   LoginService,
   ModelService,
   SecretRedactor,
   SideChatService,
+  text,
   ToolGateway,
+  type ApprovalInput,
+  type ApprovalOutcome,
 } from "@poke/application";
 import {
   type CompactionInfo,
@@ -28,6 +32,7 @@ import {
   type SystemSecretKey,
   type SystemSecrets,
   type Timers,
+  type ToolCallContext,
   type TurnInput,
   type VaultEntry,
   type VaultPort,
@@ -265,6 +270,7 @@ let agents: AgentsService;
 let poke: InteractionOrchestrator;
 let gateway: ToolGateway;
 let blocks: BlockService;
+let approvals: ApprovalService;
 let vault: MemoryVault;
 let secrets: MemorySecrets;
 let live: Array<{ type: string } & Record<string, unknown>>;
@@ -278,7 +284,10 @@ beforeEach(() => {
   kernel.settings.set("profile.timezone", "Europe/Lisbon");
   timers = new FakeTimers();
   secrets = new MemorySecrets();
-  gateway = new ToolGateway(new SecretRedactor(() => [...secrets.map.values()]), silentLogger);
+  gateway = new ToolGateway(
+    new SecretRedactor(() => [...secrets.map.values()].map((value) => ({ name: "system", value }))),
+    silentLogger,
+  );
   models = new ModelService(kernel.db, kernel.hub, catalogs, clock);
   executors = new FakeExecutors();
   const persona = () => ({ userName: "Arham", timezone: "Europe/Lisbon", workspace: "/w" });
@@ -296,6 +305,16 @@ beforeEach(() => {
     workspace: "/w",
   });
   vault = new MemoryVault();
+  approvals = new ApprovalService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    ids: kernel.ids,
+    clock,
+    log: silentLogger,
+    agents,
+    redact: (value) => value,
+  });
+  approvals.start();
   blocks = new BlockService({
     repos: kernel.db,
     hub: kernel.hub,
@@ -305,6 +324,7 @@ beforeEach(() => {
     thread: kernel.thread,
     vault,
     agents,
+    approvals,
   });
   blocks.start();
   const caps = (idleCompaction: RuntimeCapabilities["idleCompaction"]): RuntimeCapabilities => ({
@@ -869,6 +889,212 @@ describe("agents", () => {
     const holder = kernel.thread.get(block.messageId)!;
     expect(holder).toMatchObject({ role: "poke", status: "complete" });
     expect(holder.parts).toEqual([{ type: "block", blockId: block.id }]);
+  });
+});
+
+describe("approvals", () => {
+  const signal = () => new AbortController().signal;
+  const runs: ApprovalOutcome[] = [];
+  /** A stand-in for an Executor tool that Executor pauses for an OK. */
+  function registerGated(
+    name: string,
+    input: (args: Record<string, unknown>) => Omit<ApprovalInput, "args" | "resume">,
+  ) {
+    gateway.register(
+      {
+        spec: {
+          name,
+          description: name,
+          inputSchema: { type: "object" },
+          loading: "always",
+          callers: ["model"],
+          replay: "unsafe",
+        },
+        parse: (args) => args as Record<string, unknown>,
+        run: (args: Record<string, unknown>, ctx: ToolCallContext) =>
+          approvals.gate(
+            ctx,
+            { ...input(args), args, resume: { executionId: `ex_${ctx.callId}`, source: "executor" } },
+            (outcome) => {
+              runs.push(outcome);
+              return text(outcome.allowed ? "Done." : "Not done.");
+            },
+          ),
+      },
+      ["executor"],
+    );
+  }
+  async function startAgent() {
+    await setPoke();
+    await models.set({
+      role: "agents",
+      provider: "qwen-token-plan-individual",
+      model: "qwen3.8-max",
+      reasoning: "medium",
+    });
+    let agentId = "";
+    claude.script = async (_i, session) => {
+      const out = await session.spec.invoker.invoke(
+        "send_to_agent",
+        { name: "ops", goal: "Sort out Maya's order" },
+        { agent: { kind: "poke" }, callId: "c1", signal: signal() },
+      );
+      agentId = (
+        JSON.parse(out.output[0]!.type === "text" ? out.output[0]!.text : "{}") as { agentId: string }
+      ).agentId;
+      return reply("On it.");
+    };
+    say("refund Maya");
+    await until(() => agentId);
+    await idle();
+    return agentId;
+  }
+  const ctxFor = (taskId: string, callId: string) => ({
+    agent: { kind: "executor" as const, taskId },
+    callId,
+    signal: signal(),
+  });
+
+  it("parks a gated call on an OK, resumes it, and remembers always-allow", async () => {
+    runs.length = 0;
+    registerGated("northwind_refund", (args) => ({
+      integration: "northwind",
+      tool: "refund_order",
+      title: `Refund $${String(args.amount)}.00 to Maya Chen`,
+      details: [{ label: "Order", value: String(args.order) }],
+      reason: "Refunds can't be undone.",
+      offer: {
+        description: "Always allow refunds under $100",
+        constraint: { "<": [{ var: "amount" }, 100] },
+      },
+    }));
+    const agentId = await startAgent();
+    const invoker = gateway.invoker("executor");
+    const inputs: string[] = [];
+    claude.script = (input) => {
+      inputs.push(input.text);
+      return reply("The refund for Maya needs your OK.");
+    };
+    const parked = await invoker.invoke(
+      "northwind_refund",
+      { order: "#4417", amount: 84 },
+      ctxFor(agentId, "r1"),
+    );
+    const needId = parked.park!.needId;
+    await until(() => inputs.length === 1);
+    await idle();
+    expect(inputs[0]).toContain("<agent_needs_ok");
+    expect(inputs[0]).toContain("Refund $84.00 to Maya Chen");
+    const block = kernel.db.blocks.byTask(agentId)[0]!;
+    expect(block).toMatchObject({
+      kind: "tool_approval",
+      state: "pending",
+      owner: { type: "approval", taskId: agentId },
+      props: {
+        app: "northwind",
+        tool: "refund_order",
+        action: "Refund $84.00 to Maya Chen",
+        always: "Always allow refunds under $100",
+      },
+    });
+    expect(messageText(kernel.thread.get(block.messageId)!)).toBe("The refund for Maya needs your OK.");
+    const approvalId = (block.owner as { approvalId: string }).approvalId;
+
+    await blocks.act(block.id, { action: "allow", payload: { always: true }, clientActionId: "allow-0001" });
+    expect(executors.needs.at(-1)).toMatchObject({
+      taskId: agentId,
+      needId,
+      value: { allowed: true, approvalId },
+    });
+    expect(kernel.db.approvals.get(approvalId)).toMatchObject({
+      status: "allowed",
+      ruleId: expect.stringMatching(/^rul_/),
+    });
+    expect(approvals.rules()).toEqual([
+      expect.objectContaining({
+        integration: "northwind",
+        tool: "refund_order",
+        description: "Always allow refunds under $100",
+      }),
+    ]);
+    const resumed = await invoker.invoke(
+      "northwind_refund",
+      { order: "#4417", amount: 84 },
+      { ...ctxFor(agentId, "r1"), resume: { needId, value: executors.needs.at(-1)!.value } },
+    );
+    expect(resumed.output[0]).toMatchObject({ text: "Done." });
+
+    // Under $100 now runs without asking; $250 still asks.
+    const quick = await invoker.invoke(
+      "northwind_refund",
+      { order: "#4418", amount: 40 },
+      ctxFor(agentId, "r2"),
+    );
+    expect(quick.park).toBeUndefined();
+    expect(quick.output[0]).toMatchObject({ text: "Done." });
+    expect(runs.at(-1)).toMatchObject({ allowed: true, ruleId: expect.stringMatching(/^rul_/) });
+    const big = await invoker.invoke(
+      "northwind_refund",
+      { order: "#4419", amount: 250 },
+      ctxFor(agentId, "r3"),
+    );
+    expect(big.park?.needId).toBeDefined();
+    await until(() => kernel.db.blocks.byTask(agentId).length === 2);
+    await idle();
+  });
+
+  it("shows a send as a draft, passes on the edited text, and expires the OK when the agent is cancelled", async () => {
+    registerGated("gmail_send", (args) => ({
+      integration: "gmail",
+      tool: "send_email",
+      title: `Send the email to ${String(args.to)}`,
+      presentation: {
+        kind: "draft",
+        props: {
+          kind: "Email",
+          to: args.to,
+          subject: args.subject,
+          body: args.body,
+          primary: { label: "Send" },
+        },
+      },
+    }));
+    const agentId = await startAgent();
+    const invoker = gateway.invoker("executor");
+    claude.script = () => reply("Here's the email to Maya.");
+    const email = { to: "maya@northwind.co", subject: "Your refund", body: "Hi Maya, it's done." };
+    const parked = await invoker.invoke("gmail_send", email, ctxFor(agentId, "m1"));
+    await idle();
+    const draft = kernel.db.blocks.byTask(agentId)[0]!;
+    expect(draft).toMatchObject({ kind: "draft", state: "idle", props: { body: "Hi Maya, it's done." } });
+    await blocks.act(draft.id, {
+      action: "edit",
+      payload: { body: "Hi Maya, your refund is on its way." },
+      clientActionId: "edit-0001",
+    });
+    expect(executors.needs).toHaveLength(0);
+    await blocks.act(draft.id, { action: "primary", clientActionId: "send-0001" });
+    expect(executors.needs.at(-1)).toMatchObject({
+      needId: parked.park!.needId,
+      value: {
+        allowed: true,
+        final: { to: email.to, subject: email.subject, body: "Hi Maya, your refund is on its way." },
+      },
+    });
+
+    const again = await invoker.invoke("gmail_send", email, ctxFor(agentId, "m2"));
+    expect(again.park).toBeDefined();
+    await idle();
+    const second = kernel.db.blocks.byTask(agentId).find((b) => b.id !== draft.id)!;
+    const approvalId = (second.owner as { approvalId: string }).approvalId;
+    await gateway.invoke(
+      "poke",
+      "cancel_agent",
+      { agentId },
+      { agent: { kind: "poke" }, callId: "x", signal: signal() },
+    );
+    await until(() => blocks.get(second.id).state === "expired");
+    expect(kernel.db.approvals.get(approvalId)).toMatchObject({ status: "expired" });
   });
 });
 

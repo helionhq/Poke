@@ -312,6 +312,9 @@ export class PiHost {
 }
 
 /** Hosts alive in this process, for the shared extensions to find their own. */
+/** Coding tools whose arguments get vault placeholders filled in before they run. */
+const FILLED_TOOLS = new Set(["write", "edit"]);
+
 const activeHosts = new Set<PiHost>();
 function hostOf(conversationId: number): PiHost | undefined {
   for (const host of activeHosts) if (host.binding(conversationId)) return host;
@@ -336,11 +339,26 @@ function installBase(registry: Registry): void {
         const host = hostOf(conversationId);
         const binding = host?.binding(conversationId);
         if (!host || !binding) return NOT_BOUND;
+        // write and edit get vault placeholders filled in here; bash does it in its own prepare
+        // hook (as environment variables). The transcript keeps the placeholders.
+        let release: (() => void) | undefined;
         try {
-          const result = await base.execute(args, api, context);
+          let input = args;
+          if (FILLED_TOOLS.has(base.name)) {
+            const prepared = await binding.interceptor.prepare(base.name, args, binding.agent);
+            input = prepared.args as typeof args;
+            release = prepared.release;
+          }
+          const result = await base.execute(input, api, context);
           if ("kind" in result) return result;
           return redactResult(result, (text) => binding.interceptor.redact(text));
+        } catch (error) {
+          return {
+            output: [{ type: "text", text: binding.interceptor.redact(errorText(error)) }],
+            isError: true,
+          };
         } finally {
+          release?.();
           host.release(Number(api.taskId));
         }
       },

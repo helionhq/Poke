@@ -1,6 +1,7 @@
 import { BLOCK_TOOLS, CORE_TOOLS, interactionPrompt, type PersonaSlots, turnContext } from "@poke/agent-core";
 import {
   type AgentActivity,
+  type BlockOwner,
   type CacheLifetime,
   clampBudget,
   claudeIdleCompactionDelay,
@@ -30,6 +31,7 @@ import {
 } from "@poke/domain";
 import type { AgentOutcome, AgentsService, NeedInput } from "./agents.js";
 import { recordUsage } from "./agents.js";
+import { approvalBlock } from "./approvals.js";
 import type { AttachmentService } from "./attachments.js";
 import type { BlockService } from "./blocks.js";
 import type { EventHub } from "./core/hub.js";
@@ -66,8 +68,11 @@ export interface InteractionDeps {
 interface PendingBlock {
   kind: string;
   props: Record<string, unknown>;
+  /** Shown only while this task still waits on this need. */
   taskId: string;
   needId: string;
+  /** Defaults to the task's need. */
+  owner?: BlockOwner;
 }
 
 type Input =
@@ -287,7 +292,7 @@ export class InteractionOrchestrator {
    */
   #attachNeedBlocks(items: Input[], reply: Message | undefined): void {
     const pending = items.flatMap((i) => (i.kind === "system" && i.blocks ? i.blocks : []));
-    if (pending.length === 0) return;
+    if (pending.length === 0 || this.#closed) return;
     let target = reply?.scope === "main" ? reply : undefined;
     for (const block of pending) {
       const task = this.deps.repos.tasks.get(block.taskId);
@@ -297,7 +302,7 @@ export class InteractionOrchestrator {
         this.deps.blocks.attach(target, {
           kind: block.kind,
           props: block.props,
-          owner: { type: "task", taskId: block.taskId, needId: block.needId },
+          owner: block.owner ?? { type: "task", taskId: block.taskId, needId: block.needId },
         });
       } catch (error) {
         this.deps.log.error({ err: error, task: block.taskId }, "couldn't show an agent's need");
@@ -543,12 +548,25 @@ export class InteractionOrchestrator {
           ],
         };
       }
-      case "approval":
-        // The tool gate creates approval blocks itself (milestone 5).
+      case "approval": {
+        const request = this.deps.repos.approvals.get(need.approvalId);
+        if (!request) {
+          return { kind: "system", text: `<agent_waiting ${attrs}>\nWaiting for an OK.\n</agent_waiting>` };
+        }
+        const why = request.reason ? `\nwhy it asks: ${request.reason}` : "";
         return {
           kind: "system",
-          text: `<agent_waiting ${attrs}>\nWaiting for ${user} to approve a tool call.\n</agent_waiting>`,
+          text: `<agent_needs_ok ${attrs}>\n${request.integration} ${request.tool}: ${request.title}${why}\n</agent_needs_ok>\nThe app asks for ${user}'s OK before this runs. Its card is shown under your reply, and the agent carries on once he decides. Say in a line what it's about to do; don't ask again yourself.`,
+          blocks: [
+            {
+              ...approvalBlock(request),
+              taskId: task.id,
+              needId: need.id,
+              owner: { type: "approval", approvalId: request.id, taskId: task.id },
+            },
+          ],
         };
+      }
     }
   }
 

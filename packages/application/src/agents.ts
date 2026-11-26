@@ -28,7 +28,8 @@ export type QuestionNeed = Extract<TaskNeed, { kind: "question" }>;
 export type NeedInput =
   | Omit<Extract<TaskNeed, { kind: "question" }>, "id">
   | Omit<Extract<TaskNeed, { kind: "secret" }>, "id">
-  | Omit<Extract<TaskNeed, { kind: "connection" }>, "id">;
+  | Omit<Extract<TaskNeed, { kind: "connection" }>, "id">
+  | Omit<Extract<TaskNeed, { kind: "approval" }>, "id">;
 
 /** What Poke hears about its agents. Cancellations it asked for aren't reported back. */
 export type AgentOutcome =

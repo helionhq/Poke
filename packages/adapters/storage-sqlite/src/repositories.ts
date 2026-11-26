@@ -289,7 +289,11 @@ export class SqliteBlocks implements BlockRepository {
       block.createdAt,
       block.updatedAt,
       block.fallback ?? null,
-      block.owner.type === "task" ? block.owner.taskId : null,
+      block.owner.type === "task"
+        ? block.owner.taskId
+        : block.owner.type === "approval"
+          ? (block.owner.taskId ?? null)
+          : null,
     );
   }
   get(id: string): Block | undefined {
@@ -683,6 +687,7 @@ function deviceFromRow(row: Row): Device {
   };
   setOpt(device, "lastSeenAt", n(row.last_seen_at));
   setOpt(device, "revokedAt", n(row.revoked_at));
+  setOpt(device, "vaultKey", s(row.vault_key));
   return device;
 }
 
@@ -701,10 +706,10 @@ export class SqliteDevices implements DeviceRepository {
   constructor(private readonly db: SqliteDb) {}
   save(device: Device): void {
     this.db.run(
-      `INSERT INTO devices (id, name, platform, scope, token_hash, created_at, last_seen_at, revoked_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO devices (id, name, platform, scope, token_hash, created_at, last_seen_at, revoked_at, vault_key)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET name = excluded.name, last_seen_at = excluded.last_seen_at,
-         revoked_at = excluded.revoked_at`,
+         revoked_at = excluded.revoked_at, vault_key = excluded.vault_key`,
       device.id,
       device.name,
       device.platform,
@@ -713,6 +718,7 @@ export class SqliteDevices implements DeviceRepository {
       device.createdAt,
       nul(device.lastSeenAt),
       nul(device.revokedAt),
+      nul(device.vaultKey),
     );
   }
   get(id: string): Device | undefined {
@@ -1008,6 +1014,8 @@ function approvalFromRow(row: Row): ApprovalRequest {
   setOpt(request, "reason", s(row.reason));
   setOpt(request, "ruleId", s(row.rule_id));
   setOpt(request, "decidedAt", n(row.decided_at));
+  setOpt(request, "presentation", optJson(row.presentation));
+  setOpt(request, "offer", optJson(row.offer));
   return request;
 }
 
@@ -1016,8 +1024,8 @@ export class SqliteApprovals implements ApprovalRepository {
   save(r: ApprovalRequest): void {
     this.db.run(
       `INSERT INTO approvals (id, integration, tool, title, details, reason, args, args_hash, resume, requester, status, rule_id,
-         created_at, decided_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         created_at, decided_at, presentation, offer)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET status = excluded.status, rule_id = excluded.rule_id, decided_at = excluded.decided_at`,
       r.id,
       r.integration,
@@ -1033,6 +1041,8 @@ export class SqliteApprovals implements ApprovalRepository {
       nul(r.ruleId),
       r.createdAt,
       nul(r.decidedAt),
+      r.presentation ? json(r.presentation) : null,
+      r.offer ? json(r.offer) : null,
     );
   }
   get(id: string): ApprovalRequest | undefined {

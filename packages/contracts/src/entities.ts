@@ -60,7 +60,7 @@ export type Message = z.infer<typeof Message>;
 export const BlockOwner = z.discriminatedUnion("type", [
   z.object({ type: z.literal("poke") }),
   z.object({ type: z.literal("task"), taskId: z.string(), needId: z.string() }),
-  z.object({ type: z.literal("approval"), approvalId: z.string() }),
+  z.object({ type: z.literal("approval"), approvalId: z.string(), taskId: z.string().optional() }),
 ]);
 
 export const Block = z.object({
@@ -282,5 +282,33 @@ export const Device = z.object({
   createdAt: z.number(),
   lastSeenAt: z.number().optional(),
   revokedAt: z.number().optional(),
+  /** The device enrolled a Face ID key at pairing and can open the vault. */
+  vault: z.boolean().optional(),
 });
 export type Device = z.infer<typeof Device>;
+
+/** "Always allow refunds under $100": Executor-gated tools only. */
+export const ApprovalRule = z.object({
+  id: z.string(),
+  integration: z.string(),
+  tool: z.string(),
+  /** JSON-logic over the call's arguments; absent means always. */
+  constraint: z.unknown().optional(),
+  description: z.string(),
+  createdAt: z.number(),
+});
+export type ApprovalRule = z.infer<typeof ApprovalRule>;
+
+export const ApprovalRequest = z.object({
+  id: z.string(),
+  integration: z.string(),
+  tool: z.string(),
+  title: z.string(),
+  details: z.array(z.object({ label: z.string(), value: z.string() })),
+  reason: z.string().optional(),
+  status: z.enum(["pending", "allowed", "denied", "expired"]),
+  ruleId: z.string().optional(),
+  createdAt: z.number(),
+  decidedAt: z.number().optional(),
+});
+export type ApprovalRequest = z.infer<typeof ApprovalRequest>;

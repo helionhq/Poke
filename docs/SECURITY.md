@@ -73,3 +73,46 @@ redacted before they are stored.
   logos by app id or domain, links opened only on a tap, with limits on size and depth.
 - Actions are idempotent per `clientActionId` and serialised per block, so a retried or doubled tap
   can't save, book or approve twice.
+
+## Vault use without seeing (milestone 5)
+
+- Agents write `{{vault:name.field}}`. The `SecretResolver` fills values in **inside the tool
+  executor**, after the model emitted the call: for Pi's `write` and `edit`, for any gateway tool
+  registered with `resolveSecrets` (Executor calls, the browser and HTTP tools in milestone 6), and
+  for `bash` as per-call environment variables (`"${POKE_SECRET_RESY_LOGIN_PASSWORD}"`), so the
+  value never appears on a command line. Transcripts keep the placeholders. Tools that pass text on
+  to a model (`send_to_agent`, `ask_poke`) never resolve them.
+- An unknown entry, a missing field, or a used-up one-time code fails the call with a message the
+  agent can act on; nothing runs with a half-filled argument.
+- After the tool runs, the entry is marked used ("Used by" the integration). One-time codes are
+  deleted on first use; a sweep every minute wipes any older than 10 minutes.
+- Redaction now leaves `[vault:<entry>]` (or `[vault:system]` for provider credentials) in
+  place of every form of a secret.
+
+## Face ID for the vault (milestone 5)
+
+- At pairing the phone makes an Ed25519 key pair, keeps the private key in the Keychain behind Face
+  ID, and sends the public key (`vaultKey`). The server stores only the public key.
+- Every vault request (list, add, edit, delete, reveal) needs a fresh proof:
+  `POST /v1/vault/challenge {action, name?}` returns a challenge (60 s, single use, bound to the
+  device and to that action on that entry); the phone signs it after Face ID and sends
+  `X-Poke-Vault-Proof: <challengeId>.<signature>`. A stolen device token can't open the vault, and
+  a proof can't be replayed or reused for another entry. Five failed proofs lock the device out of
+  the vault for five minutes.
+- The admin socket and agents can't reach these routes. Reveal answers with
+  `Cache-Control: no-store`. Provider credentials are never listed.
+- A device paired without a key (the CLI, an older phone) can't open the vault; pairing again from
+  the app enrols one.
+
+## Approvals (milestone 5)
+
+- Poke gates nothing on its own (brief 12). Only a call Executor pauses goes through
+  `ApprovalService.gate`: an always-allow rule that matches lets it run; otherwise the agent parks,
+  and the decision comes only from the stored approval's block. The client never sends the call's
+  details back; the server decides against what it stored.
+- Always-allow rules exist only for Executor-gated tools and are created only from the "Always
+  allow …" option of a real approval. Their conditions are a small JSON-logic subset over the
+  arguments; a condition that can't be read never allows anything.
+- Every decision (allowed, denied, by rule, expired) is logged with a sha256 of the arguments (keys
+  sorted). Arguments kept for display are redacted first. An approval whose agent stops waiting
+  expires, and so does its block.
