@@ -1,1 +1,8 @@
-export {};
+export { createKernel, type Kernel, type KernelOptions } from "./kernel.js";
+export { startServer, serverVersion, type RunningServer, type ServerOptions } from "./server.js";
+export { resolvePaths, ensureDirs, DATA_DIRS, type PokePaths } from "./infra/paths.js";
+export { createLogger } from "./infra/logger.js";
+export { buildApp, bearerFrom, type Surface } from "./http/app.js";
+export { servicesFromKernel, type Services } from "./services.js";
+export { ensureMasterKey, loadMasterKey } from "./infra/master-key.js";
+export { buildStatus, registerStatus, type StatusReport, type StatusContributor } from "./status.js";

@@ -5,8 +5,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | # | Milestone | Status |
 |---|---|---|
 | 1 | Scaffold: monorepo, tooling, boundaries, CI, contracts/domain skeletons, docs stubs | ✅ done |
-| 2 | Server core: SQLite + migrations, thread/messages/events with seq, WS resume, attachments, pairing, admin socket, minimal CLI | ⏳ next |
-| 3 | Runtimes: Pi Durable executors, Claude Agent SDK, model registry, `poke login` / `poke model`, traces, compaction, side chats | |
+| 2 | Server core: SQLite + migrations, thread/messages/events with seq, WS resume, attachments, pairing, admin socket, minimal CLI | ✅ done |
+| 3 | Runtimes: Pi Durable executors, Claude Agent SDK, model registry, `poke login` / `poke model`, traces, compaction, side chats | ⏳ next |
 | 4 | Blocks: catalog + `card`, state machines, actions API, agent tools, `ask_poke` parking | |
 | 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | |
 | 6 | Integrations: Executor bridge, Keenable, browse, local MCP | |
@@ -29,3 +29,23 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   1.6.1 with 13 models each (1M context); Agent SDK options `settingSources`, `persistSession`,
   `effort`, `thinking`, `plugins`, `skills`, `PreCompact`/`PostCompact`, `compact_boundary`,
   `supportedModels()`, `tool(…, { alwaysLoad, searchHint })`.
+
+### Milestone 2 — server core
+- `@poke/storage-sqlite`: `node:sqlite` (WAL, FTS5), migration 1 with every table the brief needs,
+  synchronous repositories, `VACUUM INTO` backups. Message search indexes text plus draft/block text.
+- `@poke/contracts`: zod entities, persisted/live events, WS frames, REST bodies, the settings map.
+- `@poke/application`: `EventHub` (entity + event in one transaction, notify after commit), sortable
+  ids, `ThreadService` (idempotent send, reply excerpts, paging, hydration), `DeviceService`
+  (pairing codes, hashed tokens, share scope, rate limit), `AttachmentService`, `SettingsService`,
+  presence.
+- `apps/server`: kernel, public Fastify app on 127.0.0.1:7070 and admin app on the 0600 unix socket,
+  REST routes, OpenAPI generated from the contracts, resumable `WS /v1/events`, uploads, the share
+  endpoint, pino logs with a redaction hook.
+- `apps/cli`: `poke setup` (preflight, data dirs + master key, profile, pairing; later milestones
+  register their steps), `poke config` (settings and devices; secret keys register later),
+  `poke status`. It talks to the admin socket when the server runs, otherwise it opens the kernel
+  in-process.
+- Tests: storage, contracts, kernel (pairing expiry and rate limit, idempotency), HTTP (auth scopes,
+  uploads, share, WS replay and resume), admin socket end to end. 32 tests.
+- Not yet: `poke start/stop/restart` (systemd plus the Docker services) and `install.sh` arrive with
+  the services they manage.

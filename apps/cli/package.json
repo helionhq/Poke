@@ -21,6 +21,16 @@
   "dependencies": {
     "@poke/domain": "workspace:*",
     "@poke/contracts": "workspace:*",
-    "@poke/client": "workspace:*"
+    "@poke/client": "workspace:*",
+    "@poke/server": "workspace:*",
+    "@poke/application": "workspace:*",
+    "@clack/prompts": "1.9.0",
+    "commander": "15.1.0",
+    "qrcode-terminal": "0.12.0",
+    "picocolors": "1.1.1",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/qrcode-terminal": "0.12.2"
   }
 }

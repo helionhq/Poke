@@ -157,3 +157,12 @@ export const silentLogger: Logger = {
 export interface Timers {
   setTimeout(fn: () => void, ms: number): { cancel(): void };
 }
+
+export interface CryptoPort {
+  randomBytes(length: number): Uint8Array;
+  /** URL-safe random token (base64url). */
+  randomToken(bytes?: number): string;
+  sha256Hex(data: string | Uint8Array): string;
+  /** Constant-time string comparison. */
+  safeEqual(a: string, b: string): boolean;
+}

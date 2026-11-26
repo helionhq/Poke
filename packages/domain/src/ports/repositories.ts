@@ -38,7 +38,8 @@ export interface MessageSearchHit {
 }
 
 export interface MessageRepository {
-  save(message: Message): void;
+  /** extraSearchText: text from blocks in the message (draft bodies) so Search finds it. */
+  save(message: Message, extraSearchText?: string): void;
   get(id: string): Message | undefined;
   byClientMessageId(clientMessageId: string): Message | undefined;
   page(opts: { before?: string; limit: number }): MessagePage;

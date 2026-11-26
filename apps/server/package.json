@@ -25,6 +25,16 @@
     "@poke/contracts": "workspace:*",
     "@poke/blocks": "workspace:*",
     "@poke/agent-core": "workspace:*",
-    "@poke/application": "workspace:*"
+    "@poke/application": "workspace:*",
+    "@poke/storage-sqlite": "workspace:*",
+    "fastify": "5.12.8",
+    "@fastify/websocket": "11.3.7",
+    "@fastify/multipart": "10.1.9",
+    "pino": "10.4.0",
+    "ws": "8.23.0",
+    "zod": "4.6.7"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.2"
   }
 }

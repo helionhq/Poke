@@ -2,3 +2,13 @@ packages:
   - apps/*
   - packages/*
   - packages/adapters/*
+
+autoInstallPeers: true
+strictPeerDependencies: false
+linkWorkspacePackages: true
+nodeLinker: isolated
+
+onlyBuiltDependencies:
+  - esbuild
+  - "@anthropic-ai/claude-agent-sdk"
+  - protobufjs
