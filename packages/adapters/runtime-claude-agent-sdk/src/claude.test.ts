@@ -16,9 +16,9 @@ type Script = (
 
 /** A scripted stand-in for the Agent SDK's query(): replies to each user message it reads. */
 function fakeQuery(script: Script) {
-  const calls: Array<{ options: Options; received: SDKUserMessage[] }> = [];
+  const calls: Array<{ options: Options; received: SDKUserMessage[]; flags: unknown[] }> = [];
   const fn: QueryFn = ({ prompt, options }) => {
-    const call = { options, received: [] as SDKUserMessage[] };
+    const call = { options, received: [] as SDKUserMessage[], flags: [] as unknown[] };
     calls.push(call);
     const out = new AsyncQueue<SDKMessage>();
     let interrupted = false;
@@ -49,6 +49,9 @@ function fakeQuery(script: Script) {
         interrupted = true;
       },
       close: () => out.close(),
+      applyFlagSettings: async (settings) => {
+        call.flags.push(settings);
+      },
     };
     void interrupted;
     return query;
@@ -126,6 +129,20 @@ async function drain(events: AsyncIterable<RuntimeEvent>) {
 }
 
 describe("Claude runtime options", () => {
+  it("runs a voice turn at its own effort and the next turn back at the session's", async () => {
+    const fake = fakeQuery((_m, out) => {
+      reply(out, ["ok"]);
+      result(out);
+    });
+    const session = await runtime(fake.fn).openSession(spec());
+    await drain(session.startTurn({ text: "spoken", reasoning: "low" }));
+    expect(fake.calls[0]!.options.effort).toBe("low");
+    await drain(session.startTurn({ text: "typed" }));
+    await drain(session.startTurn({ text: "typed again" }));
+    expect(fake.calls).toHaveLength(1);
+    expect(fake.calls[0]!.flags).toEqual([{ effortLevel: "high" }]);
+  });
+
   it("runs Poke with no built-in tools, no setting files, its own compaction settings and a clean env", async () => {
     const fake = fakeQuery((m, out) => {
       out({ type: "system", subtype: "init", session_id: "ses_1", model: "claude-opus-5-5", tools: [] });

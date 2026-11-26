@@ -34,6 +34,8 @@ import {
   type Notifier,
   type ProviderKind,
   type SearchPort,
+  type SpeechToText,
+  type TextToSpeech,
 } from "@poke/domain";
 import { VoyageCatalog, VoyageEmbeddings, validateVoyageKey } from "@poke/embeddings-voyage";
 import { ExecutorClient } from "@poke/integrations-executor";
@@ -42,6 +44,7 @@ import { GATEWAY_PORT, ModelGateway } from "@poke/model-gateway";
 import { SdkMcpConnector } from "@poke/mcp-bridge";
 import { BarkNotifier } from "@poke/notify-bark";
 import { KeenableSearch } from "@poke/search-keenable";
+import { AssemblyAiStt, AssemblyAiTts } from "@poke/speech-assemblyai";
 import {
   CLAUDE_PROVIDER,
   ClaudeConversationRuntime,
@@ -170,6 +173,8 @@ export interface AgentStack extends ModelStack {
   routines: RoutineService;
   skills: SkillService;
   notifications: NotificationService;
+  /** AssemblyAI dictation, read aloud and calls (brief section 17). */
+  speech: { stt: SpeechToText; tts: TextToSpeech };
   persona(): PersonaSlots;
   shutdown(): Promise<void>;
 }
@@ -192,6 +197,8 @@ export interface AgentStackOptions extends ModelStackOptions {
   modelGateway?: false | { host: string; port?: number };
   /** Tests: a fake push sender instead of Bark. */
   notifier?: Notifier;
+  /** Tests: fake speech services. */
+  speech?: { stt: SpeechToText; tts: TextToSpeech };
 }
 
 export async function openAgentStack(kernel: Kernel, options: AgentStackOptions = {}): Promise<AgentStack> {
@@ -208,6 +215,11 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     log,
     ...(options.executorTransport ? { transport: options.executorTransport } : {}),
   });
+  const speechKey = () => stack.vault.system.get("assemblyai.key");
+  const speech = options.speech ?? {
+    stt: new AssemblyAiStt({ apiKey: speechKey }),
+    tts: new AssemblyAiTts({ apiKey: speechKey, defaultVoice: () => settings.get("app.voice") }),
+  };
   const search =
     options.search ?? new KeenableSearch({ apiKey: () => stack.vault.system.get("keenable.key") });
   const memory = new MemoryService({
@@ -441,6 +453,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     routines,
     skills,
     notifications,
+    speech,
     persona,
     async shutdown() {
       sweeper?.cancel();

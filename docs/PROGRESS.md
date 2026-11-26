@@ -13,8 +13,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | ✅ done |
 | 8 | Routines + skills + notifications | ✅ done |
 | 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | ✅ done |
-| 10 | Voice: dictation, read aloud, call mode | ⏳ next |
-| 11 | Live Activity, OTA updates, release pipeline, setup docs | |
+| 10 | Voice: dictation, read aloud, call mode | ✅ done |
+| 11 | Live Activity, OTA updates, release pipeline, setup docs | ⏳ next |
 | 12 | Polish pass | |
 
 ## Log
@@ -269,3 +269,28 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   outbox, events and formatting, share text files, the icon route) and 12 Jest in the app
   (base64url, pairing codes, vault signatures checked with Ed25519 verify, ListRow toggles,
   search highlighting).
+
+### Milestone 10 — voice
+- `@poke/speech-assemblyai`: streaming STT v3 (call and dictation models, key terms, turns that
+  count only when formatted, Terminate waits for the last words), TTS-1 over HTTP (WAV, split under
+  the length limit) and over WebSocket (Generate, Flush, Cancel, keep-alive), and the 34 documented
+  voices. `assemblyai.key` joins the service keys (`poke config`).
+- Server: `VoiceCall` (application) runs a call over the normal thread; `WS /v1/voice/dictate`,
+  `WS /v1/voice/call`, `POST /v1/tts` (cached per message and voice), `GET /v1/voice`, and
+  `GET/PATCH /v1/settings` for the phone's own settings.
+- Voice turns: the spoken-style note and the Poke assignment's `voiceReasoning`, per turn, in both
+  runtimes (Claude: `applyFlagSettings({ effortLevel })`; Pi: reconfigure the agent).
+- App: dictation from the composer mic (words appear as he speaks; tap again or send to finish),
+  read aloud in the chosen voice, the call screen (listening, thinking, speaking; his last words
+  small, Poke's reply large; waveform from the mic; mute; camera with a small preview; end), and
+  Settings → Voice. Audio through `react-native-audio-api` with the voice-chat session and echo
+  cancellation on calls.
+- CI: a macOS workflow (`ios.yml`) prebuilds and compiles the app unsigned when the app or its
+  native inputs change.
+- To verify on a phone (needs a Mac build and an AssemblyAI key): echo cancellation on the
+  speaker, barge-in latency, the mic's delivered sample rate (resampled to 16 kHz if it differs),
+  Bluetooth headsets, and the camera stills. The CI native build runs on the first push.
+- Tests: 212 Vitest (new: the AssemblyAI adapter against a fake socket and fetch, VoiceCall's
+  turns, speech, barge-in and camera frames, whole-word speech buffering, the voice routes and
+  sockets, the settings allow-list, per-turn effort in the Claude runtime) and 17 Jest in the app
+  (PCM conversion and resampling, dictation text, the dictation session against a fake socket).

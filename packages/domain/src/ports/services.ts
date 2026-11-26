@@ -79,36 +79,69 @@ export interface SearchPort {
 }
 
 export interface SttSession {
-  /** 16 kHz mono PCM16 little-endian. */
+  /** Mono PCM16 little-endian at the session's sample rate (16 kHz by default). */
   send(pcm: Uint8Array): void;
   /** Ask the service to end the current turn now. */
   forceEndpoint(): void;
+  /** Ends the session after the last turn is in. */
   close(): Promise<void>;
 }
 
 export interface SttEvents {
+  /** The current turn so far (replaces the previous partial). */
   onPartial(text: string): void;
-  /** A finished turn (turn detection). */
+  /** He started talking (barge-in). */
+  onSpeechStarted?(): void;
+  /** A finished, formatted turn (turn detection). */
   onTurn(text: string): void;
   onError(error: Error): void;
   onClose?(): void;
 }
 
 export interface SpeechToText {
-  open(events: SttEvents, opts?: { sampleRate?: number; formatTurns?: boolean }): Promise<SttSession>;
+  configured(): boolean;
+  /** `mode` "dictation" waits longer before ending a turn; "call" answers sooner. */
+  open(
+    events: SttEvents,
+    opts?: { sampleRate?: number; mode?: "dictation" | "call"; keyterms?: string[] },
+  ): Promise<SttSession>;
 }
 
 export interface TtsVoice {
   id: string;
   name: string;
   language?: string;
+  description?: string;
+}
+
+/** Spoken text, fed in pieces as the reply streams. */
+export interface TtsStream {
+  /** More text (a fragment is fine; spaces are kept as given). */
+  push(text: string): void;
+  /** Speak everything pushed so far, even a short tail. */
+  flush(): void;
+  /** Barge-in: drop queued text and audio. */
+  cancel(): void;
+  close(): Promise<void>;
+}
+
+export interface TtsStreamEvents {
+  /** Mono PCM16 little-endian at `streamSampleRate`. */
+  onAudio(pcm: Uint8Array): void;
+  /** Everything up to a flush has been sent. */
+  onFlushed?(): void;
+  onError(error: Error): void;
+  onClose?(): void;
 }
 
 export interface TextToSpeech {
+  configured(): boolean;
   voices(): Promise<TtsVoice[]>;
-  /** Streams audio chunks (format given by the adapter). */
-  synthesize(text: string, opts: { voice?: string; signal?: AbortSignal }): AsyncIterable<Uint8Array>;
-  readonly audioFormat: { mime: string; sampleRate?: number };
+  /** One whole clip for read-aloud, as a WAV file. */
+  speak(text: string, opts: { voice?: string; signal?: AbortSignal }): Promise<Uint8Array>;
+  /** A streaming session for call mode. */
+  open(events: TtsStreamEvents, opts: { voice?: string }): Promise<TtsStream>;
+  readonly streamSampleRate: number;
 }
 
 export interface Notification {

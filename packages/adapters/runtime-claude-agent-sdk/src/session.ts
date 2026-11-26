@@ -27,6 +27,8 @@ import { fromMcpName, MCP_SERVER, pokeMcpServer } from "./tools.js";
 export interface QueryLike extends AsyncIterable<SDKMessage> {
   interrupt(): Promise<unknown>;
   close(): void;
+  /** Mid-session settings (streaming input only): used to change effort for one turn. */
+  applyFlagSettings?(settings: { effortLevel?: Options["effort"] | null }): Promise<void>;
 }
 export type QueryFn = (params: { prompt: AsyncIterable<SDKUserMessage>; options: Options }) => QueryLike;
 
@@ -76,6 +78,8 @@ export class ClaudeSession implements ConversationSession {
   #ref: string | undefined;
   #needsDigest: boolean;
   #query: QueryLike | undefined;
+  /** A one-turn reasoning override in force (voice); undefined means the session's own level. */
+  #effort: string | undefined;
   #input: AsyncQueue<SDKUserMessage> | undefined;
   #initSeen = false;
   #turn: Turn | undefined;
@@ -112,6 +116,7 @@ export class ClaudeSession implements ConversationSession {
       text = `${this.spec.digest}\n\n${text}`;
       this.#needsDigest = false;
     }
+    await this.#useEffort(input.reasoning);
     const message = this.#userMessage(text, input.images);
     const turn = this.#newTurn(message);
     if (this.#ref) turn.queue.push({ type: "session", ref: this.#ref });
@@ -165,6 +170,20 @@ export class ClaudeSession implements ConversationSession {
     this.#query = undefined;
     for (const release of this.#releases.values()) release();
     this.#releases.clear();
+  }
+
+  /**
+   * A voice turn runs at the voice reasoning level and the next turn goes back. A new query
+   * starts at the wanted level; a live one is switched with `applyFlagSettings`.
+   */
+  async #useEffort(override: string | undefined): Promise<void> {
+    if (override === this.#effort) return;
+    this.#effort = override;
+    const wanted = override ?? this.spec.reasoning ?? this.spec.model.reasoning;
+    if (!this.#query?.applyFlagSettings) return;
+    await this.#query
+      .applyFlagSettings({ effortLevel: (wanted ?? null) as Options["effort"] | null })
+      .catch((error: unknown) => this.options.log.warn({ err: error }, "couldn't change claude effort"));
   }
 
   // ── query lifecycle ────────────────────────────────────────────────────────────────────────
@@ -223,7 +242,7 @@ export class ClaudeSession implements ConversationSession {
         ? ({ kind: "poke" } as const)
         : ({ kind: "sidechat", sideChatId: spec.key.replace(/^sidechat:/, "") } as const);
     const builtins: string[] = spec.profile === "sidechat" ? [...SIDECHAT_TOOLS] : [];
-    const effort = spec.reasoning ?? spec.model.reasoning;
+    const effort = this.#effort ?? spec.reasoning ?? spec.model.reasoning;
     const canUseTool: CanUseTool = async (name, input) =>
       name.startsWith(`mcp__${MCP_SERVER}__`) || builtins.includes(name)
         ? { behavior: "allow", updatedInput: input }

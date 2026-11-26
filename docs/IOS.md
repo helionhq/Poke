@@ -3,7 +3,7 @@
 The app is `apps/mobile`: Expo SDK 58 (React Native 0.88, React 19.3), expo-router, Hermes. It is
 built from the Doop canvas's tokens and components (`@poke/ui-tokens`, `@poke/ui-native`) and talks
 to the server only through `@poke/client`. Live Activity, OTA updates and the release pipeline are
-milestone 11 (brief §23); voice is milestone 10.
+milestone 11 (brief §23).
 
 ## Layout
 
@@ -16,7 +16,8 @@ apps/mobile/
     thread.tsx              poke://thread?message=… → the thread, scrolled to it
     search.tsx              04 Search the thread
     agent.tsx               06 Agent sheet (form sheet)
-    voice.tsx               07 Voice (layout; audio in milestone 10)
+    voice.tsx               07 Voice: a call with Poke
+    voices.tsx              Settings → Voice
     sidechat.tsx            09 Side chat
     routines/index, [id]    12 Routines, one routine (poke://routines/:id)
     skills/index, [name]    13 Skills, one skill
@@ -25,7 +26,8 @@ apps/mobile/
     library.tsx             Library (brief §16): attachments and the workspace
     settings.tsx            server, devices, share token, unpair
     approvals.tsx           "Always allowed" rules
-  src/lib/                  session, pairing, vault key, cache, PokeProvider, handlers
+  src/lib/                  session, pairing, vault key, cache, PokeProvider, handlers,
+                            audio (mic, speaker, clips), voice (dictation, calls), pcm
   src/thread/               message rows, traces, menus
   src/ui/                   Screen frame, Field
   modules/document-scanner  local Expo module: VisionKit document camera → one PDF
@@ -79,6 +81,31 @@ The server checks Face ID itself (decision 41):
 The Vault screen keeps entries in memory only, clears them when the app goes to the background,
 and hides a revealed secret again after 30 seconds. Nothing from the vault is cached on the phone.
 
+## Voice
+
+Audio goes through `react-native-audio-api` (its Expo plugin adds the microphone text; there is no
+background audio mode). `src/lib/audio.ts` wraps it:
+
+- `prepareAudio(use)` sets the AVAudioSession: calls `playAndRecord` + `voiceChat`, dictation
+  `playAndRecord` + `default`, read aloud `playback` + `spokenAudio` (ducks music).
+- `Mic` delivers mono PCM16 at 16 kHz in ~100 ms chunks (resampled if the device gives another
+  rate), with Apple's voice processing (echo cancellation) on for calls.
+- `Speaker` plays streamed PCM16 through an `AudioBufferQueueSourceNode`; `flush()` empties the
+  queue at once (barge-in).
+- `playClip(wav)` plays one read-aloud clip.
+
+`src/lib/voice.ts`:
+
+- `Dictation`: the composer mic. Audio goes to `WS /v1/voice/dictate`; the field shows what was
+  typed before plus the words so far. Tapping the mic again or sending stops it and waits (up to
+  3 s) for the last words.
+- `Call`: screen 07. Audio both ways over `WS /v1/voice/call`; the screen shows his last words,
+  Poke's reply as it is spoken, the state and a waveform from the mic. The camera button shows a
+  small preview and sends a still every 2.5 s. Leaving the screen or backgrounding the app ends
+  the call. Everything said is in the thread as normal messages.
+- Read aloud (the speaker in a message's actions) plays the server's clip in the chosen voice
+  (Settings → Voice). Until the server has an AssemblyAI key, the iPhone's own voice reads it.
+
 ## Deep links
 
 `poke://thread?message=<id>`, `poke://vault`, `poke://routines/<id>`, `poke://pair?d=<payload>`.
@@ -95,6 +122,7 @@ share token.
 - `pnpm --filter @poke/mobile typecheck` and `test` (Jest, `jest-expo/ios`, Testing Library 14:
   `render` and `fireEvent` are async).
 - `pnpm --filter @poke/mobile exec expo export --platform ios` bundles the app (CI runs it).
+- The ios workflow prebuilds and compiles the app unsigned on macOS when the app changes.
 - Build `@poke/contracts`, `@poke/blocks`, `@poke/client` and `@poke/ui-tokens` first: Metro and
   Jest load their `dist`.
 
@@ -108,3 +136,7 @@ These need a Mac build and an iPhone; none can run on the Windows dev box or in 
 - The VisionKit scanner module builds and returns a PDF (`modules/document-scanner`).
 - Liquid Glass on iOS 26 and the blur fallback below it.
 - The Shortcut steps in SHARE_SHORTCUT.md.
+- Voice (with an AssemblyAI key on the server): echo cancellation on the loudspeaker during a
+  call, how fast barge-in cuts Poke off, the mic sample rate the device delivers, Bluetooth
+  headsets, and camera stills on a call.
+- The native build itself: CI builds it unsigned on macOS (.github/workflows/ios.yml).

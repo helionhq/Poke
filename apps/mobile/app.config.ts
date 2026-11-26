@@ -1,5 +1,7 @@
 import type { ConfigContext, ExpoConfig } from "expo/config";
 
+const MIC = "Talk to Poke: dictate messages and make voice calls.";
+
 /**
  * Poke for iPhone. Sideloaded (SideStore), updated over the air from Poke's own server
  * (milestone 11). The bundle id and URL scheme are fixed: deep links and pairing depend on them.
@@ -41,7 +43,11 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     ["expo-local-authentication", { faceIDPermission: "Unlock your Vault." }],
     [
       "expo-camera",
-      { cameraPermission: "Take a photo or scan the pairing code.", recordAudioAndroid: false },
+      {
+        cameraPermission: "Take a photo, scan the pairing code, or show Poke something on a call.",
+        microphonePermission: MIC,
+        recordAudioAndroid: false,
+      },
     ],
     ["expo-image-picker", { photosPermission: "Pick photos to send to Poke." }],
     "expo-background-task",
@@ -56,6 +62,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       },
     ],
     "expo-sharing",
+    // Streaming mic and playback for dictation and calls (brief section 17). No background audio:
+    // a call ends when the app leaves the screen.
+    ["react-native-audio-api", { iosMicrophonePermission: MIC, iosBackgroundMode: false }],
   ],
   experiments: { typedRoutes: false },
 });

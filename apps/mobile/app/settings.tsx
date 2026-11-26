@@ -31,6 +31,7 @@ export default function SettingsScreen() {
   const { client, session } = poke;
   const health = useRemote((p) => p.client.health(), []);
   const devices = useRemote((p) => p.client.devices(), []);
+  const voice = useRemote((p) => p.client.voice(), [], ["settings.updated"]);
   const [shareToken, setShareToken] = useState<string>();
 
   const revoke = (d: Device) =>
@@ -78,6 +79,7 @@ export default function SettingsScreen() {
     }
   };
 
+  const voiceName = voice.data?.voices.find((v) => v.id === voice.data?.voice)?.name;
   const active = (devices.data?.devices ?? []).filter((d) => !d.revokedAt);
   return (
     <Screen title="Settings">
@@ -96,6 +98,14 @@ export default function SettingsScreen() {
       </ListGroup>
 
       <ListGroup header="Poke">
+        <ListRow
+          tile="orange"
+          title="Voice"
+          subtitle="How Poke sounds reading aloud and on calls"
+          {...(voiceName ? { value: voiceName } : {})}
+          icon={(color) => <Icon name="speaker" size={16} color={color} />}
+          onPress={() => router.push("/voices")}
+        />
         <ListRow
           tile="green"
           title="Always allowed"

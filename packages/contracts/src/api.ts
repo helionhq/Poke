@@ -308,6 +308,7 @@ export const SERVICE_KEYS = {
   "executor.token": "Executor personal access token",
   "keenable.key": "Keenable API key",
   "bark.deviceKey": "Bark device key (from the Bark app)",
+  "assemblyai.key": "AssemblyAI API key (dictation, read aloud, calls)",
 } as const;
 export type ServiceKey = keyof typeof SERVICE_KEYS;
 export const ServiceKeyList = z.object({
@@ -380,3 +381,68 @@ export type IntegrationAccount = z.infer<typeof IntegrationAccount>;
 export type Integration = z.infer<typeof Integration>;
 export type CatalogApp = z.infer<typeof CatalogApp>;
 export type McpServer = z.infer<typeof McpServer>;
+
+// ── Voice (section 17, milestone 10) ─────────────────────────────────────────────────────────
+
+export const VoiceOption = z.object({
+  id: z.string(),
+  name: z.string(),
+  language: z.string().optional(),
+  description: z.string().optional(),
+});
+export type VoiceOption = z.infer<typeof VoiceOption>;
+/** GET /v1/voice: whether voice is set up, the chosen voice and the ones to pick from. */
+export const VoiceInfo = z.object({
+  configured: z.boolean(),
+  voice: z.string(),
+  voices: z.array(VoiceOption),
+  /** Mic audio the server expects: mono PCM16 little-endian. */
+  inputSampleRate: z.number(),
+  /** Call audio the server sends: mono PCM16 little-endian. */
+  outputSampleRate: z.number(),
+});
+export type VoiceInfo = z.infer<typeof VoiceInfo>;
+/** POST /v1/tts: a message read aloud, as WAV (cached per message and voice). */
+export const TtsRequest = z.object({
+  messageId: z.string().min(1),
+  voice: z.string().min(1).max(80).optional(),
+});
+export type TtsRequest = z.infer<typeof TtsRequest>;
+
+/**
+ * WS /v1/voice/dictate: the phone sends binary mic audio and `{type:"stop"}`; the server sends
+ * the text so far and each finished stretch, then `done` once the last words are in.
+ */
+export const DictateServerFrame = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("ready") }),
+  z.object({ type: z.literal("partial"), text: z.string() }),
+  z.object({ type: z.literal("final"), text: z.string() }),
+  z.object({ type: z.literal("error"), message: z.string() }),
+  z.object({ type: z.literal("done") }),
+]);
+export type DictateServerFrame = z.infer<typeof DictateServerFrame>;
+export const DictateClientFrame = z.object({ type: z.literal("stop") });
+
+/**
+ * WS /v1/voice/call: binary frames both ways are mono PCM16 audio (mic in at 16 kHz, Poke's voice
+ * out at `outputSampleRate`); everything else is JSON.
+ */
+export const CallClientFrame = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("mute"), muted: z.boolean() }),
+  /** A camera still (base64 JPEG, at most about 2 MB); the newest goes with his next turn. */
+  z.object({ type: z.literal("frame"), jpeg: z.string().max(3_000_000) }),
+  z.object({ type: z.literal("camera"), on: z.boolean() }),
+  z.object({ type: z.literal("end") }),
+]);
+export type CallClientFrame = z.infer<typeof CallClientFrame>;
+export const CallServerFrame = z.discriminatedUnion("type", [
+  z.object({ type: z.literal("ready"), sampleRate: z.number() }),
+  z.object({ type: z.literal("state"), state: z.enum(["listening", "thinking", "speaking"]) }),
+  z.object({ type: z.literal("user"), text: z.string(), final: z.boolean() }),
+  z.object({ type: z.literal("poke"), text: z.string(), final: z.boolean() }),
+  /** Barge-in: drop the audio still queued for playback. */
+  z.object({ type: z.literal("interrupt") }),
+  z.object({ type: z.literal("error"), message: z.string() }),
+  z.object({ type: z.literal("ended") }),
+]);
+export type CallServerFrame = z.infer<typeof CallServerFrame>;

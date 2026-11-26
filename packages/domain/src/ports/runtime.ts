@@ -83,6 +83,8 @@ export type ToolObservation =
 export interface TurnInput {
   text: string;
   images?: Array<{ mimeType: string; data: string }>;
+  /** This turn's reasoning level (a voice turn); the session's own level when absent. */
+  reasoning?: string;
 }
 
 export type RuntimeErrorKind =

@@ -1,4 +1,6 @@
 import type {
+  AppSettings,
+  AppSettingsPatch,
   Block,
   BlockActionRequest,
   IntegrationPatchRequest,
@@ -9,6 +11,7 @@ import type {
   ThreadInfo,
   ThreadPage,
   SearchResponse,
+  VoiceInfo,
   WorkspaceListing,
 } from "@poke/contracts";
 import type {
@@ -181,6 +184,50 @@ export class PokeClient {
   /** The composer's stop: ends Poke's turn and the agents it started. */
   stop() {
     return this.request<{ stopped: boolean; tasks: number }>("POST", "/v1/thread/stop");
+  }
+
+  // ── settings and voice (milestone 10) ──────────────────────────────────────────────────────
+  settings() {
+    return this.request<{ settings: AppSettings }>("GET", "/v1/settings");
+  }
+  updateSettings(patch: AppSettingsPatch) {
+    return this.request<{ settings: AppSettings }>("PATCH", "/v1/settings", { body: patch });
+  }
+  voice() {
+    return this.request<VoiceInfo>("GET", "/v1/voice");
+  }
+  /** A message read aloud: WAV bytes (the server caches them per message and voice). */
+  async tts(messageId: string, voice?: string): Promise<ArrayBuffer> {
+    let res: Response;
+    try {
+      res = await this.#fetch(this.url("/v1/tts"), {
+        method: "POST",
+        headers: { ...this.authHeaders(), "content-type": "application/json", accept: "audio/wav" },
+        body: JSON.stringify({ messageId, ...(voice ? { voice } : {}) }),
+      });
+    } catch {
+      throw new PokeError("Can't reach Poke", 0, "offline");
+    }
+    if (!res.ok) {
+      const body = safeJson(await res.text()) as { error?: { code?: string; message?: string } };
+      throw new PokeError(
+        body.error?.message ?? `Poke answered ${res.status}`,
+        res.status,
+        body.error?.code ?? "error",
+      );
+    }
+    return res.arrayBuffer();
+  }
+  /**
+   * Where a voice socket connects (/v1/voice/dictate or /v1/voice/call) and how it authenticates:
+   * the token rides in the subprotocol, like the event stream.
+   */
+  socketTarget(path: "/v1/voice/dictate" | "/v1/voice/call") {
+    return {
+      url: `${this.baseUrl.replace(/^http/, "ws")}${path}`,
+      protocols: ["poke.v1", `poke.bearer.${this.#token ?? ""}`],
+      headers: { ...this.#headers },
+    };
   }
   search(q: string, filter: "all" | "messages" | "tasks" | "links" | "photos" = "all") {
     return this.request<SearchResponse>("GET", "/v1/search", { query: { q, filter } });

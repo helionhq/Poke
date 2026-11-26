@@ -5,6 +5,7 @@ import {
   MEMORY_TOOLS,
   type PersonaSlots,
   turnContext,
+  voiceTurnNote,
 } from "@poke/agent-core";
 import {
   type AgentActivity,
@@ -580,6 +581,9 @@ export class InteractionOrchestrator {
       chunks.push(lines.join("\n"));
     }
     const persona = this.deps.persona();
+    // A spoken turn (call mode): short and plain, at the voice reasoning level.
+    const voice = items.some((i) => i.kind === "user" && i.message.origin.kind === "voice");
+    if (voice) chunks.push(voiceTurnNote(persona.userName));
     const announcements = this.deps.skills?.takeAnnouncements() ?? [];
     const active = this.deps.agents
       .list()
@@ -594,7 +598,12 @@ export class InteractionOrchestrator {
         ...(announcements.length ? { extra: announcements } : {}),
       }),
     );
-    return { text: chunks.join("\n\n"), ...(images.length ? { images } : {}) };
+    const voiceReasoning = voice ? this.deps.models.get("poke")?.voiceReasoning : undefined;
+    return {
+      text: chunks.join("\n\n"),
+      ...(images.length ? { images } : {}),
+      ...(voiceReasoning ? { reasoning: voiceReasoning } : {}),
+    };
   }
 
   #outcomeInput(outcome: AgentOutcome): Input {

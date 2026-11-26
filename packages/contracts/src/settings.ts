@@ -97,3 +97,15 @@ export const AppSettings = z.object({
   name: z.string().optional(),
 });
 export type AppSettings = z.infer<typeof AppSettings>;
+
+/** GET/PATCH /v1/settings: what the phone may read and change, and the setting each maps to. */
+export const APP_SETTING_KEYS = {
+  wallpaper: "app.wallpaper",
+  voice: "app.voice",
+  readAloudAuto: "app.readAloudAuto",
+  timezone: "profile.timezone",
+  name: "profile.name",
+} as const satisfies Record<keyof AppSettings, SettingKey>;
+export const AppSettingsPatch = AppSettings.partial();
+export type AppSettingsPatch = z.infer<typeof AppSettingsPatch>;
+export const AppSettingsResponse = z.object({ settings: AppSettings });

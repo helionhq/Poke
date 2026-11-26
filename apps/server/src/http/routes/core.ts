@@ -1,5 +1,9 @@
 import { publicDevice } from "@poke/application";
 import {
+  APP_SETTING_KEYS,
+  type AppSettings,
+  AppSettingsPatch,
+  AppSettingsResponse,
   DeviceList,
   HealthResponse,
   PairRequest,
@@ -16,6 +20,42 @@ import { stackStatus } from "../../stack.js";
 import { buildStatus } from "../../status.js";
 
 export function registerCoreRoutes(app: FastifyInstance, s: Services, surface: Surface): void {
+  // The phone's own settings (voice, wallpaper, timezone); everything else stays with the CLI.
+  const appSettings = (): AppSettings => {
+    const voice = s.settings.get(APP_SETTING_KEYS.voice);
+    const timezone = s.settings.get(APP_SETTING_KEYS.timezone);
+    const name = s.settings.get(APP_SETTING_KEYS.name);
+    return {
+      wallpaper: s.settings.get(APP_SETTING_KEYS.wallpaper) ?? "haze",
+      readAloudAuto: s.settings.get(APP_SETTING_KEYS.readAloudAuto) ?? false,
+      ...(voice ? { voice } : {}),
+      ...(timezone ? { timezone } : {}),
+      ...(name ? { name } : {}),
+    };
+  };
+  route(app, { method: "GET", url: "/v1/settings", auth: "device", response: AppSettingsResponse }, () => ({
+    settings: appSettings(),
+  }));
+  route(
+    app,
+    {
+      method: "PATCH",
+      url: "/v1/settings",
+      auth: "device",
+      body: AppSettingsPatch,
+      response: AppSettingsResponse,
+    },
+    ({ body }) => {
+      for (const [field, key] of Object.entries(APP_SETTING_KEYS) as Array<
+        [keyof AppSettings, (typeof APP_SETTING_KEYS)[keyof AppSettings]]
+      >) {
+        const value = body[field];
+        if (value !== undefined) s.settings.set(key, value);
+      }
+      return { settings: appSettings() };
+    },
+  );
+
   route(app, { method: "GET", url: "/v1/health", auth: "none", response: HealthResponse }, () => ({
     ok: true,
     version: s.version,

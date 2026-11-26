@@ -203,3 +203,24 @@ redacted before they are stored.
 - **MCP servers added from the phone** take a key only as a vault placeholder in the header
   (`Bearer {{vault:<name>.key}}`); the app never sends the key itself.
 - **`/icon.png`** is the only new unauthenticated route: a fixed image file.
+
+## Voice (milestone 10)
+
+- **AssemblyAI's key never leaves the server.** It lives in the vault's system namespace
+  (`assemblyai.key`, set with `poke config`), is read per connection, and goes only in the
+  `Authorization` header (never in a URL, so it can't reach a log). The phone talks only to Poke;
+  the voice sockets take the same device token as the event stream, and share-only tokens are
+  refused.
+- **What AssemblyAI receives:** his microphone audio during dictation and calls, the text of
+  messages read aloud, and Poke's reply text on calls. Message text is already redacted (vault
+  values never reach the thread), so no secret is sent for speech. Read-aloud clips are cached on
+  the server under `<data>/tts` (the newest 300), named by message id, voice and update time; the
+  voice id is checked against `[A-Za-z0-9_-]` so it can't form a path.
+- **A call is ordinary messages.** His turns go through `ThreadService.send` with origin `voice`,
+  so redaction, approvals and memory apply as for typed text. Camera stills are stored as normal
+  attachments and only the newest unused one is sent, with his next turn.
+- **The phone's settings API is an allow-list.** `PATCH /v1/settings` can change only the
+  wallpaper, voice, read-aloud preference, timezone and name; server settings (`public.url`,
+  `browse.host`, `executor.org`…) stay CLI-only.
+- **Audio on the phone:** the mic runs only while dictating or on a call (the call ends when the
+  app leaves the screen; there is no background audio mode). Nothing recorded is written to disk.

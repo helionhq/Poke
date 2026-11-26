@@ -38,6 +38,7 @@
     "@poke/runtime-claude-agent-sdk": "workspace:*",
     "@poke/runtime-pi-durable": "workspace:*",
     "@poke/search-keenable": "workspace:*",
+    "@poke/speech-assemblyai": "workspace:*",
     "@poke/storage-sqlite": "workspace:*",
     "@poke/ui-tokens": "workspace:*",
     "@poke/vault-sodium": "workspace:*",

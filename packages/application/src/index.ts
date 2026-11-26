@@ -84,3 +84,4 @@ export { describeSchedule, nextRunAfter, parseLocalTime } from "./routines/sched
 export { SkillService, type SkillsDeps, type SkillView } from "./skills/service.js";
 export { parseSkill, parseFrontmatter, type ParsedSkill } from "./skills/parse.js";
 export { NotificationService, type NotificationsDeps } from "./notifications.js";
+export { VoiceCall, speakable, speakableHead, type CallOutput, type VoiceCallDeps } from "./voice.js";

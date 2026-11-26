@@ -179,6 +179,8 @@ export interface ComposerProps extends Omit<TextInputProps, "style" | "onChangeT
   text: string;
   onChangeText: (text: string) => void;
   working?: boolean;
+  /** Dictation is on: the mic stays visible and lit, and tapping it stops. */
+  dictating?: boolean;
   onPlus?: () => void;
   onMic?: () => void;
   onVoice?: () => void;
@@ -197,6 +199,7 @@ export const Composer = forwardRef<TextInputInstance, ComposerProps>(function Co
     text,
     onChangeText,
     working,
+    dictating = false,
     onPlus,
     onMic,
     onVoice,
@@ -278,14 +281,20 @@ export const Composer = forwardRef<TextInputInstance, ComposerProps>(function Co
               }}
               {...input}
             />
-            {mode !== "typing" && (
+            {(mode !== "typing" || dictating) && (
               <Pressable
                 accessibilityRole="button"
-                accessibilityLabel="Dictate"
+                accessibilityLabel={dictating ? "Stop dictating" : "Dictate"}
+                accessibilityState={{ selected: dictating }}
                 onPress={onMic}
                 style={{ width: 34, height: 36, alignItems: "center", justifyContent: "center" }}
               >
-                <Icon name="mic" size={20} color={c.ink2} strokeWidth={1.9} />
+                <Icon
+                  name="mic"
+                  size={20}
+                  color={dictating ? c.red : c.ink2}
+                  strokeWidth={dictating ? 2.2 : 1.9}
+                />
               </Pressable>
             )}
             <Pressable

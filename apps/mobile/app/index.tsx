@@ -1,4 +1,12 @@
-import { clock, dayLabel, needsDivider, type Block, type Message, type ThreadRow } from "@poke/client";
+import {
+  clock,
+  dayLabel,
+  needsDivider,
+  PokeError,
+  type Block,
+  type Message,
+  type ThreadRow,
+} from "@poke/client";
 import {
   Composer,
   DayDivider,
@@ -21,9 +29,11 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Alert, FlatList, KeyboardAvoidingView, Pressable, type TextInputInstance, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { pickFiles, pickPhotos, scan, takePhoto, upload, type LocalFile } from "../src/lib/attach";
+import { playClip, prepareAudio } from "../src/lib/audio";
 import { blockHandlers } from "../src/lib/handlers";
 import { usePoke, useRemote, useThread } from "../src/lib/poke";
 import { useWallpaper } from "../src/lib/prefs";
+import { Dictation } from "../src/lib/voice";
 import { MessageRow, PendingRow, type RowCallbacks } from "../src/thread/MessageRow";
 import { AddMenu, MessageMenu, SelectSheet } from "../src/thread/menus";
 
@@ -170,9 +180,34 @@ export default function ThreadScreen() {
     }
   };
 
+  // Dictation: the mic streams to the server and the words land in the field as he speaks.
+  const dictation = useRef<Dictation>(undefined);
+  const [dictating, setDictating] = useState(false);
+  const toggleDictation = async () => {
+    if (dictation.current) {
+      await dictation.current.stop();
+      return;
+    }
+    const session = new Dictation(poke.client, text, setText, (error) => {
+      if (dictation.current === session) dictation.current = undefined;
+      setDictating(false);
+      if (error) Alert.alert("Dictation stopped", error);
+    });
+    dictation.current = session;
+    setDictating(true);
+    void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
+    await session.start().catch((error: unknown) => {
+      dictation.current = undefined;
+      setDictating(false);
+      Alert.alert("Can't dictate", error instanceof Error ? error.message : "");
+    });
+  };
+  useEffect(() => () => void dictation.current?.stop(), []);
+
   const uploading = attached.some((a) => !a.id && !a.error);
   const send = async () => {
-    const body = text.trim();
+    // Sending mid-dictation keeps the last words.
+    const body = (dictation.current ? await dictation.current.stop() : text).trim();
     const ids = attached.flatMap((a) => (a.id ? [a.id] : []));
     if ((!body && ids.length === 0) || uploading) return;
     void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Light);
@@ -183,26 +218,49 @@ export default function ThreadScreen() {
     list.current?.scrollToOffset({ offset: 0, animated: true });
   };
 
-  const speak = (message: Message, words: string) => {
-    if (speaking === message.id) {
-      void Speech.stop();
+  // Read aloud in the chosen AssemblyAI voice (the server caches each clip). Before voice is set
+  // up on the server, the iPhone's own voice reads it instead.
+  const playing = useRef<{ id: string; stop(): void }>(undefined);
+  const speak = async (message: Message, words: string) => {
+    const current = playing.current;
+    playing.current = undefined;
+    current?.stop();
+    void Speech.stop();
+    if (current?.id === message.id || speaking === message.id) {
       setSpeaking(undefined);
       return;
     }
-    void Speech.stop();
     setSpeaking(message.id);
-    Speech.speak(words.replace(/\*\*/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"), {
-      onDone: () => setSpeaking(undefined),
-      onStopped: () => setSpeaking(undefined),
-    });
+    const done = () => setSpeaking((id) => (id === message.id ? undefined : id));
+    try {
+      const wav = await poke.client.tts(message.id);
+      if (!(await prepareAudio("playback"))) return done();
+      const clip = await playClip(wav);
+      playing.current = { id: message.id, stop: clip.stop };
+      void clip.done.then(() => {
+        if (playing.current?.id === message.id) playing.current = undefined;
+        done();
+      });
+    } catch (error) {
+      if (error instanceof PokeError && error.code === "unavailable") {
+        Speech.speak(words.replace(/\*\*/g, "").replace(/\[([^\]]+)\]\([^)]+\)/g, "$1"), {
+          onDone: done,
+          onStopped: done,
+        });
+        return;
+      }
+      done();
+      Alert.alert("Couldn't read that aloud", error instanceof Error ? error.message : "");
+    }
   };
+  useEffect(() => () => playing.current?.stop(), []);
 
   const cb: RowCallbacks = {
     onLongPress: (message, t) => {
       void Haptics.impactAsync(Haptics.ImpactFeedbackStyle.Medium);
       setMenu({ message, text: t });
     },
-    onSpeak: speak,
+    onSpeak: (message, words) => void speak(message, words),
     ...(speaking ? { speakingId: speaking } : {}),
     routineName: (id) => routineNames.get(id),
     handlers,
@@ -343,7 +401,8 @@ export default function ThreadScreen() {
             {...(attached.some((a) => a.id) && !text.trim() ? { state: "typing" as const } : {})}
             working={store.activity !== "idle"}
             onPlus={() => setAdding(true)}
-            onMic={() => input.current?.focus()}
+            dictating={dictating}
+            onMic={() => void toggleDictation()}
             onVoice={() => router.push("/voice")}
             onSend={() => void send()}
             onStop={() => void poke.client.stop().catch(() => {})}

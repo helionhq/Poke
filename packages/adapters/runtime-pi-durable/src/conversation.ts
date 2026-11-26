@@ -79,6 +79,8 @@ class PiSession implements ConversationSession {
   #turn: AsyncQueue<RuntimeEvent> | undefined;
   #needsDigest: boolean;
   #expectedManual = 0;
+  /** A one-turn reasoning override in force (voice); undefined means the session's own level. */
+  #effort: string | undefined;
   #off: Array<() => void> = [];
 
   constructor(
@@ -145,10 +147,25 @@ class PiSession implements ConversationSession {
     await this.#tracker.start();
   }
 
+  /** A voice turn runs at the voice reasoning level; the next turn goes back to the session's. */
+  async #useEffort(override: string | undefined): Promise<void> {
+    if (override === this.#effort) return;
+    this.#effort = override;
+    const kind = this.spec.profile === "poke" ? "poke" : "sidechat";
+    const agent = agentFor(
+      this.host,
+      kind,
+      { ...this.spec, tools: this.spec.tools },
+      override ?? this.spec.reasoning,
+    );
+    await this.conversation.configure(agent, BACKGROUND_CONTEXT);
+  }
+
   async *startTurn(input: TurnInput): AsyncIterable<RuntimeEvent> {
     const queue = new AsyncQueue<RuntimeEvent>();
     this.#turn = queue;
     try {
+      await this.#useEffort(input.reasoning);
       let text = input.text;
       if (this.#needsDigest && this.spec.digest) {
         text = `${this.spec.digest}\n\n${text}`;

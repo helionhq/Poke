@@ -77,6 +77,7 @@ function Navigator() {
           <Stack.Screen name="vault" />
           <Stack.Screen name="library" />
           <Stack.Screen name="settings" />
+          <Stack.Screen name="voices" />
           <Stack.Screen name="approvals" />
         </Stack.Protected>
       </Stack>

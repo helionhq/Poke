@@ -356,3 +356,51 @@ apps/mobile (expo-router screens)
 | `PATCH /v1/integrations/:id` | device | default account, a capability on or off |
 | `DELETE /v1/integrations/:id/accounts/:accountId` | device | disconnect one account |
 | `GET /icon.png` | none | Poke's mark, for Bark push icons |
+
+## Voice (milestone 10)
+
+```
+phone mic ─ Mic (react-native-audio-api, 16 kHz PCM16, voice processing on calls)
+   │  WS /v1/voice/dictate ──► AssemblyAiStt (dictation: max_accuracy) ──► partial/final text
+   │  WS /v1/voice/call ─────► VoiceCall ─► AssemblyAiStt (realtime-agent model, turn detection)
+   │                              │  each finished turn ─► ThreadService.send(origin "voice")
+   │                              │        └─► InteractionOrchestrator: voice note + voiceReasoning
+   │                              │  hub message.delta of the reply ─► AssemblyAiTts stream (Generate)
+   │                              │  reply complete ─► Flush
+   ◄──────── PCM16 24 kHz ────────┘  SpeechStarted / partial while speaking ─► Cancel + "interrupt"
+phone Speaker (AudioBufferQueueSourceNode; "interrupt" clears the queue)
+POST /v1/tts {messageId} ─► AssemblyAiTts.speak (HTTP, WAV) ─► cache <data>/tts ─► playClip
+```
+
+- `@poke/speech-assemblyai`: `AssemblyAiStt` (Streaming STT v3) and `AssemblyAiTts` (TTS-1 over
+  HTTP for whole clips and over WebSocket for calls). Both take the key from the vault's system
+  namespace (`assemblyai.key`) on each connection. The domain ports (`SpeechToText`,
+  `TextToSpeech`) describe sessions, not files: text is pushed in pieces, audio comes back as it
+  is made, and `cancel` drops what's queued.
+- `VoiceCall` (application/voice.ts) is transport-free: the WS route feeds it audio and control
+  frames and sends what it emits. His turns go through the normal thread path, so a call is
+  ordinary messages, steering works mid-turn, and Poke's tools, blocks and memory behave the same.
+  Streamed reply text is spoken in whole words, never half a markdown link; markdown marks are
+  dropped and bare URLs read as "a link".
+- Barge-in: STT's `SpeechStarted` (or a non-empty partial) while Poke is speaking cancels the TTS
+  stream, tells the phone to drop its queued audio and mutes the rest of that reply. His new turn
+  steers the running turn and its reply is spoken again.
+- Voice turns: `#turnInput` adds `voiceTurnNote` and sets `TurnInput.reasoning` to the Poke
+  assignment's `voiceReasoning`. The Claude session switches effort for that turn with
+  `Query.applyFlagSettings({ effortLevel })` (streaming input mode) and back on the next; the Pi
+  session reconfigures its agent's thinking level the same way.
+- Camera on a call: the phone sends a JPEG still every 2.5 s; the newest unused one is stored as
+  an attachment and sent with his next turn.
+- Settings: the phone reads and changes its own settings (`wallpaper`, `voice`, `readAloudAuto`,
+  `timezone`, `name`) through `/v1/settings`; everything else stays with `poke config`.
+
+### API (milestone 10 additions)
+
+| Route | Auth | What |
+|---|---|---|
+| `GET /v1/voice` | device | whether voice is set up, the voice in use, the voices, sample rates |
+| `POST /v1/tts` | device | `{messageId, voice?}` → the message read aloud as WAV (cached) |
+| `WS /v1/voice/dictate` | device (full) | binary 16 kHz PCM16 in; `ready`, `partial`, `final`, `done` out; `{type:"stop"}` ends |
+| `WS /v1/voice/call` | device (full) | binary PCM16 both ways; JSON `mute`, `frame`, `camera`, `end` in; `ready`, `state`, `user`, `poke`, `interrupt`, `error`, `ended` out |
+| `GET /v1/settings` | device | the phone's settings |
+| `PATCH /v1/settings` | device | change them (unknown keys are ignored) |
