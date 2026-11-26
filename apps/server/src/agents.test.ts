@@ -12,6 +12,7 @@ import {
   IntegrationService,
   InteractionOrchestrator,
   LoginService,
+  MemoryService,
   ModelService,
   SecretRedactor,
   SecretResolver,
@@ -29,6 +30,7 @@ import {
   type ExecutorEvent,
   type ExecutorRuntime,
   type ExecutorSpec,
+  type MemoryPort,
   type ModelCatalog,
   type ModelInfo,
   messageText,
@@ -209,6 +211,33 @@ class MemoryVault implements Pick<VaultPort, "get" | "put" | "update" | "list" |
   };
 }
 
+class FakeMemory implements MemoryPort {
+  on = false;
+  exchanges: Array<{ user?: { text: string; at: number }; poke?: { text: string; at: number } }> = [];
+  facts = new Map<string, string>();
+  queries: Array<{ query: string; level: string | undefined }> = [];
+  card: string | undefined = "- Likes figs\n- Lives in Lisbon";
+  available = () => this.on;
+  async addExchange(exchange: FakeMemory["exchanges"][number]) {
+    this.exchanges.push(exchange);
+  }
+  async recall(query: string, level?: string) {
+    this.queries.push({ query, level });
+    return "He likes figs.";
+  }
+  async remember(fact: string) {
+    const ref = `con_${this.facts.size + 1}`;
+    this.facts.set(ref, fact);
+    return { ref };
+  }
+  async forget(ref: string) {
+    this.facts.delete(ref);
+  }
+  async peerCard() {
+    return this.card;
+  }
+}
+
 class MemorySecrets implements SystemSecrets {
   map = new Map<SystemSecretKey, string>();
   get = (k: SystemSecretKey) => this.map.get(k);
@@ -292,6 +321,8 @@ let secrets: MemorySecrets;
 let live: Array<{ type: string } & Record<string, unknown>>;
 /** Integration tests plug their IntegrationService in here. */
 let connectStarter: ConnectionStarter["start"];
+let fakeMemory: FakeMemory;
+let memory: MemoryService;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "poke-agents-"));
@@ -302,13 +333,30 @@ beforeEach(() => {
   kernel.settings.set("profile.timezone", "Europe/Lisbon");
   timers = new FakeTimers();
   secrets = new MemorySecrets();
-  gateway = new ToolGateway(
-    new SecretRedactor(() => [...secrets.map.values()].map((value) => ({ name: "system", value }))),
-    silentLogger,
+  const redactor = new SecretRedactor(() =>
+    [...secrets.map.values()].map((value) => ({ name: "system", value })),
   );
+  gateway = new ToolGateway(redactor, silentLogger);
   models = new ModelService(kernel.db, kernel.hub, catalogs, clock);
   executors = new FakeExecutors();
-  const persona = () => ({ userName: "Arham", timezone: "Europe/Lisbon", workspace: "/w" });
+  fakeMemory = new FakeMemory();
+  memory = new MemoryService({
+    memory: fakeMemory,
+    settings: kernel.settings,
+    gateway,
+    clock,
+    log: silentLogger,
+    redact: (value) => redactor.redact(value),
+  });
+  const persona = () => {
+    const memoryCard = memory.card();
+    return {
+      userName: "Arham",
+      timezone: "Europe/Lisbon",
+      workspace: "/w",
+      ...(memoryCard ? { memoryCard } : {}),
+    };
+  };
   agents = new AgentsService({
     repos: kernel.db,
     hub: kernel.hub,
@@ -344,8 +392,10 @@ beforeEach(() => {
     agents,
     approvals,
     connections: { start: (input) => connectStarter(input) },
+    memory,
   });
   blocks.start();
+  memory.start();
   connectStarter = () =>
     Promise.reject(new DomainError("unavailable", "Apps can't be connected from here yet"));
   const caps = (idleCompaction: RuntimeCapabilities["idleCompaction"]): RuntimeCapabilities => ({
@@ -375,6 +425,7 @@ beforeEach(() => {
     persona,
     workspace: "/w",
     skillsDir: "/s",
+    memory,
   });
   poke.start();
   live = [];
@@ -384,6 +435,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  memory.close();
   await poke.close();
   kernel.close();
   rmSync(home, { recursive: true, force: true });
@@ -502,6 +554,8 @@ describe("Poke turns", () => {
       "cancel_agent",
       "list_agents",
       "propose_action",
+      "recall",
+      "remember",
       "request_connection",
       "request_secret",
       "search_thread",
@@ -587,7 +641,7 @@ describe("agents", () => {
     expect(spec.model).toMatchObject({ role: "agents", model: "qwen3.8-max" });
     expect(spec.firstTurn).toContain("<goal>\nFind three stays");
     expect(spec.firstTurn).toContain("<background>\nMay 12–15");
-    expect(spec.tools.map((t) => t.name).sort()).toEqual(["ask_poke", "report_progress"]);
+    expect(spec.tools.map((t) => t.name).sort()).toEqual(["ask_poke", "recall", "report_progress"]);
     expect(spec.systemPrompt).toContain("You are an execution agent working for Poke, Arham's assistant");
 
     const trace = kernel.db.traces.get(task.traceId)!;
@@ -1550,6 +1604,99 @@ describe("context and compaction", () => {
     claude.sessions[0]!.tokens = 100_000;
     const manual = await poke.compactNow();
     expect(manual).toMatchObject({ trigger: "manual", preTokens: 100_000 });
+  });
+});
+
+describe("memory", () => {
+  const signal = () => new AbortController().signal;
+  const textOf = (result: { output: Array<{ type: string; text?: string }> }) =>
+    result.output.map((o) => o.text ?? "").join("");
+  const executorCtx = {
+    agent: { kind: "executor" as const, taskId: "tsk_1" },
+    callId: "r1",
+    signal: signal(),
+  };
+
+  it("writes his message and Poke's final reply only, with secrets taken out", async () => {
+    fakeMemory.on = true;
+    secrets.set("qwen.apiKey", "sk-sp-supersecret99");
+    await setPoke();
+    claude.script = () => reply("Noted, figs it is.");
+    say("I love figs. Also my key is sk-sp-supersecret99");
+    await idle();
+    await memory.flush();
+    expect(fakeMemory.exchanges).toHaveLength(1);
+    const [exchange] = fakeMemory.exchanges;
+    expect(exchange?.user?.text).toContain("I love figs.");
+    expect(exchange?.user?.text).not.toContain("supersecret");
+    expect(exchange?.poke?.text).toBe("Noted, figs it is.");
+
+    // Nothing is written while memory isn't set up.
+    fakeMemory.on = false;
+    say("still there?");
+    await idle();
+    await memory.flush();
+    expect(fakeMemory.exchanges).toHaveLength(1);
+  });
+
+  it("remembers a fact with a note, and Undo forgets it", async () => {
+    fakeMemory.on = true;
+    await setPoke();
+    claude.script = async (_i, session) => {
+      await session.spec.invoker.invoke(
+        "remember",
+        { fact: "Allergic to peanuts" },
+        { agent: { kind: "poke" }, callId: "m1", signal: signal() },
+      );
+      return reply("Got it.");
+    };
+    say("remember I'm allergic to peanuts");
+    await idle();
+    expect([...fakeMemory.facts.values()]).toEqual(["Allergic to peanuts"]);
+    const note = kernel.db.messages
+      .recent(20)
+      .flatMap((m) => m.parts)
+      .flatMap((part) => (part.type === "block" ? [kernel.db.blocks.get(part.blockId)!] : []))
+      .find((b) => b.kind === "memory_note")!;
+    expect(note.props).toEqual({ text: "Allergic to peanuts", ref: "con_1" });
+    expect(kernel.thread.get(note.messageId)).toMatchObject({ role: "poke" });
+
+    const told: string[] = [];
+    claude.script = (input) => {
+      told.push(input.text);
+      return reply("Forgotten.");
+    };
+    await blocks.act(note.id, { action: "undo", clientActionId: "undo-0001" });
+    expect(fakeMemory.facts.size).toBe(0);
+    await until(() => told.length === 1);
+    await idle();
+    expect(told[0]).toContain('undo: forget "Allergic to peanuts"');
+    expect(blocks.get(note.id).state).toBe("undone");
+  });
+
+  it("answers recall for agents at the set depth, and puts the card in Poke's prompt", async () => {
+    const off = await gateway.invoke("executor", "recall", { question: "food?" }, executorCtx);
+    expect(off.isError).toBe(true);
+    expect(textOf(off)).toContain("isn't set up");
+    // Agents can only read memory.
+    const remember = await gateway.invoke("executor", "remember", { fact: "x" }, executorCtx);
+    expect(remember.isError).toBe(true);
+    expect(fakeMemory.facts.size).toBe(0);
+
+    fakeMemory.on = true;
+    const quick = await gateway.invoke("executor", "recall", { question: "What food?" }, executorCtx);
+    expect(textOf(quick)).toBe("He likes figs.");
+    await gateway.invoke("sidechat", "recall", { question: "Where?", depth: "deep" }, executorCtx);
+    expect(fakeMemory.queries).toEqual([
+      { query: "What food?", level: "low" },
+      { query: "Where?", level: "high" },
+    ]);
+
+    await memory.refreshCard();
+    await setPoke();
+    say("hi");
+    await idle();
+    expect(claude.sessions[0]!.spec.systemPrompt).toContain("- Likes figs\n- Lives in Lisbon");
   });
 });
 

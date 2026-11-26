@@ -1,4 +1,11 @@
-import { BLOCK_TOOLS, CORE_TOOLS, interactionPrompt, type PersonaSlots, turnContext } from "@poke/agent-core";
+import {
+  BLOCK_TOOLS,
+  CORE_TOOLS,
+  interactionPrompt,
+  MEMORY_TOOLS,
+  type PersonaSlots,
+  turnContext,
+} from "@poke/agent-core";
 import {
   type AgentActivity,
   type BlockOwner,
@@ -37,6 +44,7 @@ import type { BlockService } from "./blocks.js";
 import type { EventHub } from "./core/hub.js";
 import type { PresenceTracker } from "./core/presence.js";
 import { buildDigest } from "./digest.js";
+import type { MemoryService } from "./memory.js";
 import type { ModelService } from "./models.js";
 import type { SettingsService } from "./settings.js";
 import type { ThreadService } from "./thread.js";
@@ -62,6 +70,8 @@ export interface InteractionDeps {
   persona: () => PersonaSlots;
   workspace: string;
   skillsDir: string;
+  /** Honcho: main-thread exchanges are written here, and Poke can remember facts. */
+  memory?: Pick<MemoryService, "available" | "recordExchange" | "remember">;
 }
 
 /** A block to show under the reply of the turn that handles an input (an agent's need). */
@@ -233,6 +243,7 @@ export class InteractionOrchestrator {
       this.#note(`Poke couldn't reply: ${errorText(error)}`, "provider_error");
     } finally {
       this.#attachNeedBlocks(items, reply);
+      this.#recordExchange(items, reply);
       this.#busy = false;
       this.#setActivity("idle");
     }
@@ -308,6 +319,28 @@ export class InteractionOrchestrator {
         this.deps.log.error({ err: error, task: block.taskId }, "couldn't show an agent's need");
       }
     }
+  }
+
+  /**
+   * Memory sees only what passed between him and Poke: his messages and Poke's final reply.
+   * Agent reports, tool output and side chats never reach it.
+   */
+  #recordExchange(items: Input[], reply: Message | undefined): void {
+    const memory = this.deps.memory;
+    if (!memory?.available()) return;
+    const users = items
+      .filter((i): i is Extract<Input, { kind: "user" }> => i.kind === "user")
+      .map((i) => i.message);
+    const userText = users
+      .map((m) => messageText(m).trim())
+      .filter(Boolean)
+      .join("\n\n");
+    const pokeText = reply?.scope === "main" ? messageText(reply).trim() : "";
+    if (!userText && !pokeText) return;
+    memory.recordExchange({
+      ...(userText && users[0] ? { user: { text: userText, at: users[0].createdAt } } : {}),
+      ...(pokeText && reply ? { poke: { text: pokeText, at: reply.updatedAt } } : {}),
+    });
   }
 
   /** A Poke message that holds only blocks. */
@@ -879,6 +912,18 @@ export class InteractionOrchestrator {
       ),
       ["poke"],
     );
+    const memory = this.deps.memory;
+    if (memory) {
+      gateway.register(
+        handler(MEMORY_TOOLS.remember, async (args) => {
+          if (!memory.available())
+            return text("Memory isn't set up yet, so this can't be kept. Tell him in a line.", true);
+          const { ref } = await memory.remember(args.fact);
+          return show("memory_note", { text: args.fact, ref }, "He can undo it from the note.");
+        }),
+        ["poke"],
+      );
+    }
   }
 
   /** The trace for the current turn's agent work, shown in its own message under the reply. */

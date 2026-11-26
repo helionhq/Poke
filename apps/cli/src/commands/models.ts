@@ -253,6 +253,10 @@ export async function modelCommand(
       );
     }
     const role = parseRole(roleArg);
+    if (role === "memory.embeddings" && (await api.roles()).find((r) => r.role === role)?.assignment)
+      console.error(
+        warn("Changing the embedding model means Honcho has to re-embed everything (a Honcho reset)."),
+      );
     const slash = spec.indexOf("/");
     const assignment = await api.set(role, {
       provider: spec.slice(0, slash),

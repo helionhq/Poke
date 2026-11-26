@@ -382,7 +382,13 @@ export const toolApproval = defineKind<ToolApprovalProps>({
 
 // ── memory_note: MemoryNote ──────────────────────────────────────────────────────────────────
 
-export const MemoryNoteProps = z.object({ text: z.string().trim().min(1).max(300) }).strict();
+export const MemoryNoteProps = z
+  .object({
+    text: z.string().trim().min(1).max(300),
+    /** What Undo deletes in Honcho (a conclusion id). Set by the server. */
+    ref: z.string().min(1).max(200).optional(),
+  })
+  .strict();
 export type MemoryNoteProps = z.infer<typeof MemoryNoteProps>;
 
 export const memoryNote = defineKind<MemoryNoteProps>({

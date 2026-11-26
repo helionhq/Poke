@@ -1,6 +1,7 @@
 import {
   type Clock,
   DomainError,
+  EMBEDDING_DIMENSIONS,
   LLM_ROLES,
   type ModelAssignment,
   type ModelCatalog,
@@ -187,6 +188,7 @@ export class ModelService {
       model: info.id,
       ...(input.reasoning !== undefined ? { reasoning: input.reasoning } : {}),
       ...(input.voiceReasoning !== undefined ? { voiceReasoning: input.voiceReasoning } : {}),
+      ...(role === "memory.embeddings" ? { dimensions: EMBEDDING_DIMENSIONS } : {}),
       updatedAt: this.clock.now(),
     };
     this.hub.publish(() => {

@@ -48,3 +48,4 @@ export {
   searchWeb,
   vaultList,
 } from "./tools/integrations.js";
+export { MEMORY_TOOLS, recall, remember } from "./tools/memory.js";

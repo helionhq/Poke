@@ -80,6 +80,7 @@ beforeEach(async () => {
     runtimes: { "claude-agent-sdk": echo, "pi-ai": echo },
     claudeLive: false,
     validateLogins: false,
+    modelGateway: { host: "127.0.0.1", port: 0 },
   });
   const services = servicesFromKernel(kernel, { version: "test", stack });
   publicApp = await buildApp(services, "public");
@@ -195,6 +196,61 @@ describe("agent stack over HTTP", () => {
     expect(removed.json()).toEqual({ removed: true });
   });
 
+  it("serves the model gateway behind its key, and reports memory until it's set up", async () => {
+    const status = (await adminApp.inject({ method: "GET", url: "/admin/memory" })).json();
+    expect(status).toMatchObject({
+      available: false,
+      deployed: false,
+      chatModel: null,
+      embeddingsModel: null,
+    });
+    expect(status.gateway).toMatch(/^127\.0\.0\.1:\d+$/);
+    const base = `http://${status.gateway as string}`;
+    expect((await fetch(`${base}/v1/models`)).status).toBe(503);
+    stack.vault.system.set("gateway.key", "gk-test-key");
+    expect((await fetch(`${base}/v1/models`, { headers: { authorization: "Bearer wrong" } })).status).toBe(
+      401,
+    );
+    const listed = await fetch(`${base}/v1/models`, { headers: { authorization: "Bearer gk-test-key" } });
+    expect(await listed.json()).toEqual({ object: "list", data: [] });
+    const chat = await fetch(`${base}/v1/chat/completions`, {
+      method: "POST",
+      headers: { authorization: "Bearer gk-test-key", "content-type": "application/json" },
+      body: JSON.stringify({ messages: [{ role: "user", content: "hi" }] }),
+    });
+    expect(chat.status).toBe(503);
+
+    const recall = await publicApp.inject({
+      method: "GET",
+      url: "/v1/memory/recall?q=figs",
+      headers: auth(),
+    });
+    expect(recall.statusCode).toBe(503);
+
+    // Voyage serves only the embeddings role, at Honcho's fixed 1024 dimensions.
+    const voyage = await adminApp.inject({ method: "GET", url: "/admin/models/providers/voyage" });
+    expect(voyage.json().models.map((m: { id: string }) => m.id)).toEqual(["voyage-4", "voyage-4-large"]);
+    await adminApp.inject({
+      method: "POST",
+      url: "/admin/logins/voyage",
+      payload: { secret: "pa-test-key-0001" },
+    });
+    const wrongRole = await adminApp.inject({
+      method: "PUT",
+      url: "/admin/models/memory.chat",
+      payload: { provider: "voyage", model: "voyage-4" },
+    });
+    expect(wrongRole.statusCode).toBe(403);
+    const set = await adminApp.inject({
+      method: "PUT",
+      url: "/admin/models/memory.embeddings",
+      payload: { provider: "voyage", model: "voyage-4" },
+    });
+    expect(set.json().assignment).toMatchObject({ model: "voyage-4", dimensions: 1024 });
+    const after = (await adminApp.inject({ method: "GET", url: "/admin/memory" })).json();
+    expect(after).toMatchObject({ available: false, embeddingsModel: "voyage-4" });
+  });
+
   it("redacts login secrets from tool results", async () => {
     await adminApp.inject({
       method: "POST",
@@ -277,6 +333,7 @@ describe("agent stack over HTTP", () => {
       runtimes: { "claude-agent-sdk": echo, "pi-ai": echo },
       claudeLive: false,
       validateLogins: false,
+      modelGateway: false,
     });
     const settings = JSON.stringify(kernel.settings.all());
     expect(settings).not.toContain("keepme");

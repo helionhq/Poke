@@ -94,3 +94,6 @@ export interface ModelInfo {
 export function modelKey(ref: { provider: string; model: string }): string {
   return `${ref.provider}/${ref.model}`;
 }
+
+/** Honcho's vector column, fixed at first boot: changing it means re-creating memory. */
+export const EMBEDDING_DIMENSIONS = 1024;

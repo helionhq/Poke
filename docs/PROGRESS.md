@@ -10,8 +10,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 4 | Blocks: catalog + `card`, state machines, actions API, agent tools, `ask_poke` parking | ✅ done |
 | 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | ✅ done |
 | 6 | Integrations: Executor bridge, Keenable, browse, local MCP | ✅ done |
-| 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | ⏳ next |
-| 8 | Routines + skills + notifications | |
+| 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | ✅ done |
+| 8 | Routines + skills + notifications | ⏳ next |
 | 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | |
 | 10 | Voice: dictation, read aloud, call mode | |
 | 11 | Live Activity, OTA updates, release pipeline, setup docs | |
@@ -169,3 +169,33 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   catalog), Keenable (vault key, keyless, failed pages), and end to end: a gated Executor call parked,
   approved from its block and resumed; the model refused when it tries to resume an approval; a
   sign-in moving its block to connected; an MCP server with a vault placeholder; the edited-draft pass.
+
+### Milestone 7 — memory
+- `@poke/model-gateway`: the OpenAI-compatible façade Honcho talks to, on port 7071 of the docker
+  bridge address. Chat completions (plain and SSE, tools with ids that round-trip, json_object and
+  json_schema replies) run on the Memory chat model through pi-ai; embeddings go to Voyage;
+  `/v1/models` lists the aliases. Bearer auth with the gateway key; usage is recorded per role.
+- `@poke/embeddings-voyage`: Voyage's REST API at 1024 dimensions, its model catalog (voyage-4,
+  voyage-4-large) and `poke login voyage` validation.
+- `@poke/memory-honcho`: workspace `poke`, peers `arham` (observed) and `poke` (not observed),
+  session `main`; recall through `peer.chat`, remember/forget as conclusions, the peer card.
+- `MemoryService` (application): writes his messages and Poke's final reply after each main-thread
+  turn (redacted, in order, never blocking a turn), `recall` for Poke, executors and side chats,
+  `remember` for Poke only with a `memory_note` whose Undo deletes the conclusion, and a cached peer
+  card for the prompt and digest.
+- Honcho deploy: `poke setup` (or `poke setup --only memory`) clones Honcho v3.6.2 into
+  `~/poke/services/honcho`, renders `compose.env` and `honcho.env` (0600) from
+  `infra/compose/*.template`, builds the image, starts Postgres and Redis, sizes the vector column on
+  the empty database (`provision_db.py`, then `configure_embeddings.py --yes`), starts the API and
+  deriver, and mints Poke's admin JWT.
+- `GET /v1/memory/recall` (the Search screen's "From your history"), `/admin/memory` status,
+  prepare and finish; `poke status` shows Memory and the gateway.
+- Not yet: Bark and cloudflared join the compose file in milestones 8 and 11.
+- To verify live (needs Docker, a Qwen key and a Voyage key): the Honcho build at v3.6.2, the
+  deriver's JSON replies through Qwen (json_object), dialectic tool calls, and dreaming.
+- Tests: 153 in total, including the gateway against pi-ai's faux provider (tool ids round trip,
+  SSE, fenced JSON, embeddings, key checks), the Honcho adapter against a recording fetch (paths,
+  peer observation config, conclusions), the env rendering (every module on the gateway, secrets
+  kept across runs, every compose variable defined), and end to end: exchanges written with secrets
+  removed, remember and Undo, recall for agents at the chosen depth, the card in Poke's prompt, and
+  the gateway behind its key on the real stack.

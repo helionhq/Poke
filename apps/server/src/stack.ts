@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 import { join } from "node:path";
 import type { PersonaSlots } from "@poke/agent-core";
 import {
@@ -10,7 +11,9 @@ import {
   InteractionOrchestrator,
   LoginService,
   type LoginValidator,
+  MemoryService,
   ModelService,
+  recordUsage,
   type LiveSecret,
   SecretRedactor,
   SecretResolver,
@@ -23,11 +26,15 @@ import {
   type ExecutorPort,
   type McpConnector,
   type McpServerConfig,
+  type MemoryPort,
   type ModelCatalog,
   type ProviderKind,
   type SearchPort,
 } from "@poke/domain";
+import { VoyageCatalog, VoyageEmbeddings, validateVoyageKey } from "@poke/embeddings-voyage";
 import { ExecutorClient } from "@poke/integrations-executor";
+import { HonchoMemory } from "@poke/memory-honcho";
+import { GATEWAY_PORT, ModelGateway } from "@poke/model-gateway";
 import { SdkMcpConnector } from "@poke/mcp-bridge";
 import { KeenableSearch } from "@poke/search-keenable";
 import {
@@ -114,6 +121,7 @@ export async function openModelStack(kernel: Kernel, options: ModelStackOptions 
   );
   const catalogs: Record<string, ModelCatalog> = { [CLAUDE_PROVIDER]: claudeCatalog };
   for (const id of PI_PROVIDER_IDS) catalogs[id] = piCatalog;
+  catalogs.voyage = new VoyageCatalog();
   const models = new ModelService(kernel.db, kernel.hub, catalogs, kernel.clock, (id) =>
     logins.isLoggedIn(id),
   );
@@ -136,6 +144,7 @@ function loginValidators(
     anthropic: async (token) => validateClaudeToken(token),
     qwen: (key) => validateQwenKey(piModels(), "qwen-token-plan-individual", key, fetchImpl),
     "qwen-cn": (key) => validateQwenKey(piModels(), "qwen-token-plan-individual-cn", key, fetchImpl),
+    voyage: (key) => validateVoyageKey(key, fetchImpl),
   };
 }
 
@@ -150,6 +159,8 @@ export interface AgentStack extends ModelStack {
   executor: ExecutorPort;
   poke: InteractionOrchestrator;
   sidechats: SideChatService;
+  memory: MemoryService;
+  modelGateway: ModelGateway;
   persona(): PersonaSlots;
   shutdown(): Promise<void>;
 }
@@ -166,6 +177,10 @@ export interface AgentStackOptions extends ModelStackOptions {
   executorTransport?: McpServerConfig["transport"];
   /** false: don't start browse (tests, or no browse installed). */
   browse?: false | McpServerConfig["transport"];
+  /** Tests: a fake memory instead of Honcho. */
+  memory?: MemoryPort;
+  /** false: don't serve the model gateway; a host to listen on instead of the docker bridge. */
+  modelGateway?: false | { host: string; port?: number };
 }
 
 export async function openAgentStack(kernel: Kernel, options: AgentStackOptions = {}): Promise<AgentStack> {
@@ -184,8 +199,24 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
   });
   const search =
     options.search ?? new KeenableSearch({ apiKey: () => stack.vault.system.get("keenable.key") });
+  const memory = new MemoryService({
+    memory:
+      options.memory ??
+      new HonchoMemory({
+        jwt: () => stack.vault.system.get("honcho.jwt"),
+        enabled: () => Boolean(stack.models.get("memory.chat") && stack.models.get("memory.embeddings")),
+        log,
+      }),
+    settings,
+    gateway,
+    clock: kernel.clock,
+    log,
+    redact: (text) => redactor.redact(text),
+  });
+  const modelGateway = memoryGateway(kernel, stack);
   const persona = (): PersonaSlots => {
     const homeCity = settings.get("profile.homeCity");
+    const memoryCard = memory.card();
     const integrations = integrationsSummary(
       kernel.db.integrations.list(),
       kernel.db.integrations.mcpServers(),
@@ -195,6 +226,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
       userName: settings.userName(),
       timezone: settings.timezone(),
       ...(homeCity ? { homeCity } : {}),
+      ...(memoryCard ? { memoryCard } : {}),
       workspace: paths.workspace,
     };
   };
@@ -264,6 +296,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     agents,
     approvals,
     connections: integrations,
+    memory,
   });
   integrations.attachBlocks(blocks);
   const poke = new InteractionOrchestrator({
@@ -285,6 +318,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     persona,
     workspace: paths.workspace,
     skillsDir: paths.skills,
+    memory,
   });
   const sidechats = new SideChatService({
     repos: kernel.db,
@@ -316,6 +350,16 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
   // Tools first, then executors pick up where they left off before the restart.
   blocks.start();
   approvals.start();
+  memory.start();
+  if (options.modelGateway !== false) {
+    const host = options.modelGateway?.host ?? settings.get("memory.gatewayHost") ?? dockerBridgeAddress();
+    if (!host) log.info("model gateway off: no docker bridge on this machine");
+    else
+      await modelGateway
+        .listen(host, options.modelGateway?.port ?? GATEWAY_PORT)
+        .then((at) => log.info(at, "model gateway listening"))
+        .catch((error: unknown) => log.warn({ err: error, host }, "model gateway couldn't listen"));
+  }
   // MCP servers and browse connect in the background; their tools reach agents started after.
   void integrations.connectAll().catch((error: unknown) => log.warn({ err: error }, "integrations"));
   poke.start();
@@ -331,11 +375,16 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     executor,
     poke,
     sidechats,
+    memory,
+    modelGateway,
     persona,
     async shutdown() {
       sweeper?.cancel();
+      memory.close();
+      await modelGateway.close();
       await sidechats.closeAll();
       await poke.close();
+      await memory.flush();
       await integrations.close();
       await host.close();
       stack.close();
@@ -348,6 +397,11 @@ export function stackStatus(stack: ModelStack | AgentStack): StatusContributor {
   return async (report) => {
     report.sections.logins = stack.logins.list().map((l) => ({ id: l.id, name: l.name, ok: l.loggedIn }));
     if ("poke" in stack) {
+      report.sections.memory = {
+        on: stack.memory.available(),
+        deployed: stack.vault.system.has("honcho.jwt"),
+        gateway: stack.modelGateway.address() ?? null,
+      };
       const context = await stack.poke.context();
       report.context = {
         budget: context.budget,
@@ -363,4 +417,47 @@ export function stackStatus(stack: ModelStack | AgentStack): StatusContributor {
       };
     }
   };
+}
+
+/** The docker0 bridge's IPv4 address: where Honcho's containers reach the host (host-gateway). */
+export function dockerBridgeAddress(): string | undefined {
+  return networkInterfaces().docker0?.find((a) => a.family === "IPv4")?.address;
+}
+
+/**
+ * Honcho's model gateway (section 8): the Memory chat model through pi-ai (never the Claude
+ * subscription: Memory roles only take pi-ai providers), Voyage for embeddings.
+ */
+function memoryGateway(kernel: Kernel, stack: ModelStack): ModelGateway {
+  const embeddings = new VoyageEmbeddings({
+    apiKey: () => stack.logins.secretFor("voyage"),
+    model: () => stack.models.get("memory.embeddings")?.model,
+  });
+  return new ModelGateway({
+    key: () => stack.vault.system.get("gateway.key"),
+    chat: () => {
+      const assignment = stack.models.get("memory.chat");
+      const model = assignment ? stack.piModels.getModel(assignment.provider, assignment.model) : undefined;
+      if (!assignment || !model) return undefined;
+      return { model, ...(assignment.reasoning ? { reasoning: assignment.reasoning } : {}) };
+    },
+    stream: (model, context, options) => stack.piModels.streamSimple(model, context, options),
+    embeddings: () => embeddings,
+    onUsage: (usage) =>
+      recordUsage(
+        kernel.db,
+        kernel.clock.now(),
+        usage.role,
+        {
+          provider: usage.provider,
+          model: usage.model,
+          input: usage.input,
+          output: usage.output,
+          cacheRead: usage.cacheRead,
+          cacheWrite: usage.cacheWrite,
+        },
+        Boolean(usage.error),
+      ),
+    log: kernel.log,
+  });
 }

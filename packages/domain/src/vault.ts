@@ -38,6 +38,7 @@ export type SystemSecretKey =
   | "bark.deviceKey"
   | "honcho.jwt"
   | "honcho.jwtSecret"
+  | "honcho.dbPassword"
   | "sidestore.token";
 
 export const VAULT_NAME_RE = /^[a-z0-9][a-z0-9_.-]{0,63}$/;

@@ -27,6 +27,7 @@ export const SETTINGS = {
   "access.clientId": z.string().min(1),
   "browse.host": z.string().min(1),
   "memory.recallLevel": z.enum(["minimal", "low", "medium", "high", "max"]),
+  "memory.gatewayHost": z.union([z.ipv4(), z.ipv6()]),
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;
@@ -65,6 +66,7 @@ export const SETTING_DESCRIPTIONS: Record<SettingKey, string> = {
   "access.clientId": "Cloudflare Access service-token client id (optional)",
   "browse.host": "Tailscale IP the browse relay binds to",
   "memory.recallLevel": "Default Honcho dialectic reasoning level",
+  "memory.gatewayHost": "Address the model gateway listens on (default: the docker0 bridge)",
 };
 
 export function isSettingKey(key: string): key is SettingKey {

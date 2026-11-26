@@ -143,3 +143,21 @@ redacted before they are stored.
   `status` and reports plainly when no browser is connected.
 - Executor's app catalog is a public feed (`catalog.executor.sh/index.json`); nothing about the user
   is sent to fetch it.
+
+## Memory (milestone 7)
+
+- **The Claude subscription never serves memory.** The model gateway resolves only pi-ai providers;
+  the Memory roles can't be given to the subscription (`providerAllowsRole`), and Voyage only serves
+  embeddings.
+- **The gateway is for Honcho only.** It listens on the docker bridge address, never on 0.0.0.0, and
+  every request needs the gateway key (compared in constant time). It holds no provider keys itself:
+  pi-ai and Voyage read them from the vault per request.
+- **Only the real conversation reaches Honcho.** After each main-thread turn Poke writes his messages
+  and its final reply, with every vault secret redacted first. Agent chatter and reports, tool
+  output, secret requests and side chats are never written. Executors and side chats only have the
+  read-only `recall`; `remember` is Poke's alone. Recall answers are redacted too.
+- **Honcho runs with auth on** (`AUTH_USE_AUTH=true`), its API published only on 127.0.0.1, its
+  database and cache on the compose network only. Poke's admin JWT, the JWT secret, the gateway key
+  and the database password live in the vault's system namespace; the rendered env files that carry
+  them for Docker are 0600 under `~/poke/services`, never in the repo. The CLI never prints them.
+- Undo on a memory note deletes the conclusion in Honcho before the note changes state.

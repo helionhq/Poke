@@ -79,6 +79,8 @@ export function toolLabel(name: string, args: unknown, app?: AppRef): ToolLabel 
       return { done: "Read web pages", live: "Reading web pages", app: WEB };
     case "recall":
       return { done: "Checked what I know", live: "Checking what I know" };
+    case "remember":
+      return { done: "Remembered that", live: "Remembering" };
     case "search_thread":
       return { done: "Searched the chat", live: "Searching the chat" };
     case "ask_poke":

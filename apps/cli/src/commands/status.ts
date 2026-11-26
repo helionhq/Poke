@@ -55,6 +55,12 @@ export async function statusCommand(ctx: Context, opts: { json?: boolean }): Pro
   out.push(
     `${pc.bold("Thread")}   ${report.thread.messages} messages${report.thread.since ? dim(` since ${new Date(report.thread.since).toDateString()}`) : ""}`,
   );
+  const memory = report.sections.memory as
+    { on: boolean; deployed: boolean; gateway: string | null } | undefined;
+  if (memory)
+    out.push(
+      `${pc.bold("Memory")}   ${memory.on ? "on" : pc.yellow(memory.deployed ? "off: Memory models not set" : "not set up")}${memory.gateway ? dim(` · gateway ${memory.gateway}`) : ""}`,
+    );
   out.push(`${pc.bold("Devices")}  ${report.devices.active} active`);
   out.push(`${pc.bold("Tasks")}    ${report.tasks.active} running`);
   const due = report.routines.nextDue;

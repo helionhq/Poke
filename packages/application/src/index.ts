@@ -71,3 +71,4 @@ export {
   type BrowseBridge,
   type IntegrationsDeps,
 } from "./integrations.js";
+export { MemoryService, type MemoryDeps } from "./memory.js";

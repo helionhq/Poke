@@ -105,12 +105,21 @@ importers:
       '@poke/domain':
         specifier: workspace:*
         version: link:../../packages/domain
+      '@poke/embeddings-voyage':
+        specifier: workspace:*
+        version: link:../../packages/adapters/embeddings-voyage
       '@poke/integrations-executor':
         specifier: workspace:*
         version: link:../../packages/adapters/integrations-executor
       '@poke/mcp-bridge':
         specifier: workspace:*
         version: link:../../packages/adapters/mcp-bridge
+      '@poke/memory-honcho':
+        specifier: workspace:*
+        version: link:../../packages/adapters/memory-honcho
+      '@poke/model-gateway':
+        specifier: workspace:*
+        version: link:../../packages/adapters/model-gateway
       '@poke/runtime-claude-agent-sdk':
         specifier: workspace:*
         version: link:../../packages/adapters/runtime-claude-agent-sdk

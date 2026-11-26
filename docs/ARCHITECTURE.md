@@ -263,3 +263,31 @@ search_web / fetch_pages ─ KeenableSearch
 | `GET /v1/integrations/catalog` | device | Executor's app catalog (cached an hour) |
 | `GET /v1/integrations/mcp`, `POST /v1/integrations/mcp`, `DELETE /v1/integrations/mcp/:id` | device | local MCP servers |
 | `GET /admin/keys`, `PUT/DELETE /admin/keys/:key` | admin socket | service keys (set or not; values never returned) |
+
+## Memory (milestone 7)
+
+```
+main-thread turn ends ─ InteractionOrchestrator ─ MemoryService.recordExchange ─ HonchoMemory ─ Honcho (session main)
+recall (Poke, executors, side chats) ─ MemoryService ─ peer arham .chat
+remember (Poke) ─ conclusion ─ memory_note block ─ Undo ─ BlockService ─ forget
+Honcho deriver / dialectic / summary / dream ─ http://host.docker.internal:7071/v1 ─ ModelGateway
+        chat completions ─ pi-ai (Memory chat model)      embeddings ─ VoyageEmbeddings (1024)
+```
+
+- Ports (domain): `MemoryPort`, `Embeddings`.
+- Adapters: `model-gateway` (OpenAI-compatible façade), `embeddings-voyage` (REST client, catalog,
+  key check), `memory-honcho` (SDK 2.9.0).
+- `MemoryService` (application) owns the writes, `recall`, the cached card (`PersonaSlots.memoryCard`,
+  used by the prompt and the digest) and `forget`; `InteractionOrchestrator` registers `remember`
+  because it shows the note under the reply.
+- Deploy: `apps/server/src/infra/honcho-deploy.ts` renders `infra/compose/*.template` and mints the
+  JWT; the CLI step (`apps/cli/src/commands/memory.ts`) runs git and `docker compose -p poke` with
+  `infra/compose/docker-compose.yml`.
+
+### API (milestone 7 additions)
+
+| Route | Auth | What |
+|---|---|---|
+| `GET /v1/memory/recall?q=` | device | what's known about him (the Search screen's "From your history") |
+| `GET /admin/memory` | admin socket | memory on, deployed, models, where the gateway listens |
+| `POST /admin/memory/prepare`, `POST /admin/memory/finish` | admin socket | the setup steps: secrets and env files; the JWT once Honcho is up |

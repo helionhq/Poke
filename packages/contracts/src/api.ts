@@ -283,3 +283,19 @@ export const ServiceKeyList = z.object({
   keys: z.array(z.object({ key: z.string(), label: z.string(), set: z.boolean() })),
 });
 export const ServiceKeySetRequest = z.object({ value: z.string().min(1).max(4000) });
+
+// ── memory (section 13) ──────────────────────────────────────────────────────────────────────
+
+export const MemoryRecallQuery = z.object({ q: z.string().trim().min(1).max(500) });
+export const MemoryRecallResponse = z.object({ answer: z.string() });
+export type MemoryRecallResponse = z.infer<typeof MemoryRecallResponse>;
+export const MemoryStatus = z.object({
+  available: z.boolean(),
+  /** Honcho was set up and Poke holds its admin token. */
+  deployed: z.boolean(),
+  chatModel: z.string().nullable(),
+  embeddingsModel: z.string().nullable(),
+  /** Where the model gateway listens, if it does. */
+  gateway: z.string().nullable(),
+});
+export type MemoryStatus = z.infer<typeof MemoryStatus>;

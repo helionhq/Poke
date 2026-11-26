@@ -125,7 +125,7 @@ registerSetupStep({
 
 export async function setupCommand(
   ctx: Context,
-  opts: { preflightOnly?: boolean; yes?: boolean },
+  opts: { preflightOnly?: boolean; yes?: boolean; only?: string },
 ): Promise<void> {
   p.intro(pc.bold("Poke setup"));
   const online = await ctx.online();
@@ -164,8 +164,11 @@ export async function setupCommand(
     return;
   }
 
+  const only = opts.only ? steps.filter((s) => s.id === opts.only) : steps;
+  if (opts.only && only.length === 0)
+    throw new Error(`No setup step ${opts.only}. Steps: ${steps.map((s) => s.id).join(", ")}`);
   const missing: { step: SetupStep; items: string[] }[] = [];
-  for (const step of steps) {
+  for (const step of only) {
     p.log.step(pc.bold(step.title));
     try {
       const items = await step.run(ctx);

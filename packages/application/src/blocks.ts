@@ -17,6 +17,7 @@ import {
   type Message,
   type Repositories,
   type VaultKind,
+  type MemoryPort,
   type VaultPort,
 } from "@poke/domain";
 import type { AgentsService } from "./agents.js";
@@ -93,6 +94,8 @@ export interface BlocksDeps {
   agents: Pick<AgentsService, "resolveNeed">;
   connections?: ConnectionStarter;
   approvals?: ApprovalDecider;
+  /** Undo on a memory note deletes what was saved. */
+  memory?: Pick<MemoryPort, "forget">;
 }
 
 export interface BlockActionInput {
@@ -240,6 +243,14 @@ export class BlockService {
         const props = block.props as { app: string; kind: "app" | "custom" };
         const started = await connections.start({ app: props.app, kind: props.kind, blockId: block.id });
         result = { url: started.url };
+      }
+      if (block.kind === "memory_note" && input.action === "undo") {
+        const ref = (block.props as { ref?: string }).ref;
+        const memory = this.deps.memory;
+        if (ref) {
+          if (!memory) throw new DomainError("unavailable", "Memory isn't set up");
+          await memory.forget(ref);
+        }
       }
       if (block.owner.type === "approval") {
         const decision = approvalDecision(block, transition.state, resolution, transition.props);

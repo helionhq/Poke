@@ -39,7 +39,10 @@
     "@poke/mcp-bridge": "workspace:*",
     "@poke/integrations-executor": "workspace:*",
     "@poke/search-keenable": "workspace:*",
-    "@poke/browse": "workspace:*"
+    "@poke/browse": "workspace:*",
+    "@poke/model-gateway": "workspace:*",
+    "@poke/memory-honcho": "workspace:*",
+    "@poke/embeddings-voyage": "workspace:*"
   },
   "devDependencies": {
     "@types/ws": "8.18.2"

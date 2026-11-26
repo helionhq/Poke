@@ -2,6 +2,7 @@ import { Command } from "commander";
 import { createContext } from "./admin.js";
 import { configCommand } from "./commands/config.js";
 import { loginCommand, modelCommand } from "./commands/models.js";
+import "./commands/memory.js";
 import { setupCommand } from "./commands/setup.js";
 import { statusCommand } from "./commands/status.js";
 import { bad } from "./ui.js";
@@ -30,9 +31,13 @@ program
   .command("setup")
   .description("First-run wizard (idempotent; every step after preflight can be skipped)")
   .option("--preflight", "only run the preflight checks")
+  .option("--only <step>", "run one step: profile, logins, models, memory, pair")
   .action(
-    wrap(async (opts: { preflight?: boolean }) =>
-      setupCommand(ctx, { preflightOnly: Boolean(opts.preflight) }),
+    wrap(async (opts: { preflight?: boolean; only?: string }) =>
+      setupCommand(ctx, {
+        preflightOnly: Boolean(opts.preflight),
+        ...(opts.only ? { only: opts.only } : {}),
+      }),
     ),
   );
 
