@@ -49,3 +49,5 @@ export {
   vaultList,
 } from "./tools/integrations.js";
 export { MEMORY_TOOLS, recall, remember } from "./tools/memory.js";
+export { activateSkillSpec, SKILL_TOOLS, skillInstall } from "./tools/skills.js";
+export { ROUTINE_TOOLS, routineCreate, routineDelete, routineList, routineUpdate } from "./tools/routines.js";

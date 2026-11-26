@@ -72,3 +72,15 @@ export {
   type IntegrationsDeps,
 } from "./integrations.js";
 export { MemoryService, type MemoryDeps } from "./memory.js";
+export {
+  RoutineService,
+  type RoutineFrame,
+  type RoutineInput,
+  type RoutinePatch,
+  type RoutinesDeps,
+  type ScheduleInput,
+} from "./routines/service.js";
+export { describeSchedule, nextRunAfter, parseLocalTime } from "./routines/schedule.js";
+export { SkillService, type SkillsDeps, type SkillView } from "./skills/service.js";
+export { parseSkill, parseFrontmatter, type ParsedSkill } from "./skills/parse.js";
+export { NotificationService, type NotificationsDeps } from "./notifications.js";

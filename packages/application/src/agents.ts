@@ -49,6 +49,8 @@ export interface AgentsDeps {
   settings: SettingsService;
   persona: () => PersonaSlots;
   workspace: string;
+  /** SKILL.md bodies for the skills Poke names in send_to_agent. */
+  skills?: { forTask(names: string[]): Promise<string> };
 }
 
 const ACTIVE = new Set<Task["status"]>(["running", "waiting"]);
@@ -136,7 +138,13 @@ export class AgentsService {
 
   async start(
     input: { name: string; goal: string; context?: string; skills?: string[] },
-    link: { traceId: string; parentMessageId?: string },
+    link: {
+      traceId: string;
+      parentMessageId?: string;
+      routineRunId?: string;
+      /** A routine's own Agents model, "provider/model". */
+      model?: string;
+    },
   ): Promise<Task> {
     const existing = this.deps.repos.tasks.byName(input.name);
     if (existing && ACTIVE.has(existing.status)) {
@@ -145,7 +153,7 @@ export class AgentsService {
         `An agent called ${input.name} is already working (${existing.id}). Message it with agentId instead.`,
       );
     }
-    const spec = await this.#spec(""); // fails fast when no Agents model is set
+    const spec = await this.#spec("", link.model); // fails fast when no Agents model is set
     const now = this.deps.clock.now();
     const task: Task = {
       id: this.deps.ids.next("tsk"),
@@ -156,6 +164,7 @@ export class AgentsService {
       status: "running",
       traceId: link.traceId,
       ...(link.parentMessageId ? { parentMessageId: link.parentMessageId } : {}),
+      ...(link.routineRunId ? { routineRunId: link.routineRunId } : {}),
       createdAt: now,
       updatedAt: now,
     };
@@ -165,7 +174,7 @@ export class AgentsService {
         ...spec,
         taskId: task.id,
         name: task.name,
-        firstTurn: firstTurn(task),
+        firstTurn: await this.#firstTurn(task),
       });
       task.runtimeRef = runtimeRef;
       task.updatedAt = this.deps.clock.now();
@@ -468,10 +477,30 @@ export class AgentsService {
     }
   }
 
+  async #firstTurn(task: Task): Promise<string> {
+    if (!task.skills.length || !this.deps.skills) return firstTurn(task);
+    try {
+      return firstTurn(task, await this.deps.skills.forTask(task.skills));
+    } catch (error) {
+      this.deps.log.warn({ err: error, task: task.id }, "couldn't load an agent's skills");
+      return firstTurn(task);
+    }
+  }
+
   async #spec(
     taskId: string,
+    override?: string,
   ): Promise<Omit<ExecutorSpec, "firstTurn" | "taskId" | "name"> & { taskId: string; name: string }> {
-    const model = this.deps.models.get("agents");
+    const slash = override?.indexOf("/") ?? -1;
+    const model =
+      override && slash > 0
+        ? {
+            role: "agents" as const,
+            provider: override.slice(0, slash),
+            model: override.slice(slash + 1),
+            updatedAt: 0,
+          }
+        : this.deps.models.get("agents");
     if (!model) {
       const who = this.deps.persona().userName;
       throw new DomainError(
@@ -494,10 +523,11 @@ export class AgentsService {
   }
 }
 
-function firstTurn(task: Task): string {
+function firstTurn(task: Task, skills?: string): string {
   const parts = [`<goal>\n${task.goal}\n</goal>`];
   if (task.context.trim()) parts.push(`<background>\n${task.context.trim()}\n</background>`);
-  if (task.skills.length) parts.push(`Load these skills first: ${task.skills.join(", ")}.`);
+  if (skills) parts.push(`Skills Poke picked for this; follow them:\n${skills}`);
+  else if (task.skills.length) parts.push(`Load these skills first: ${task.skills.join(", ")}.`);
   return parts.join("\n\n");
 }
 

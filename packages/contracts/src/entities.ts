@@ -212,6 +212,7 @@ export const RoutineRun = z.object({
   messageId: z.string().optional(),
   summary: z.string().optional(),
 });
+export type RoutineRun = z.infer<typeof RoutineRun>;
 
 export const Skill = z.object({
   name: z.string(),

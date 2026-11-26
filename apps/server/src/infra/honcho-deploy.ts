@@ -11,6 +11,8 @@ import type { PokePaths } from "./paths.js";
 export const HONCHO_VERSION = "v3.6.2";
 export const HONCHO_REPO = "https://github.com/plastic-labs/honcho.git";
 export const HONCHO_PORT = Number(new URL(HONCHO_URL).port);
+/** bark-server on this machine (cloudflared reaches it inside Docker; this is for `poke doctor`). */
+export const BARK_PORT = 8090;
 const DIALECTIC_LEVELS = ["minimal", "low", "medium", "high", "max"] as const;
 
 export interface MemoryLayout {
@@ -117,6 +119,7 @@ export function prepareMemory(input: {
       honcho_dir: layout.honchoDir,
       honcho_version: HONCHO_VERSION,
       honcho_port: HONCHO_PORT,
+      bark_port: BARK_PORT,
       postgres_password: postgresPassword,
     }),
   );

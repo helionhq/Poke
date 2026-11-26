@@ -13,11 +13,14 @@ import {
   type LoginValidator,
   MemoryService,
   ModelService,
+  NotificationService,
   recordUsage,
+  RoutineService,
   type LiveSecret,
   SecretRedactor,
   SecretResolver,
   SideChatService,
+  SkillService,
   ToolGateway,
 } from "@poke/application";
 import { browseServer, parseBrowseStatus } from "@poke/browse";
@@ -28,6 +31,7 @@ import {
   type McpServerConfig,
   type MemoryPort,
   type ModelCatalog,
+  type Notifier,
   type ProviderKind,
   type SearchPort,
 } from "@poke/domain";
@@ -36,6 +40,7 @@ import { ExecutorClient } from "@poke/integrations-executor";
 import { HonchoMemory } from "@poke/memory-honcho";
 import { GATEWAY_PORT, ModelGateway } from "@poke/model-gateway";
 import { SdkMcpConnector } from "@poke/mcp-bridge";
+import { BarkNotifier } from "@poke/notify-bark";
 import { KeenableSearch } from "@poke/search-keenable";
 import {
   CLAUDE_PROVIDER,
@@ -56,6 +61,7 @@ import {
 } from "@poke/runtime-pi-durable";
 import { openVault, type SodiumVault } from "@poke/vault-sodium";
 import { ensureMasterKey, loadMasterKey } from "./infra/master-key.js";
+import { FsSkillFiles } from "./infra/skill-files.js";
 import type { Kernel } from "./kernel.js";
 import type { StatusContributor } from "./status.js";
 
@@ -161,6 +167,9 @@ export interface AgentStack extends ModelStack {
   sidechats: SideChatService;
   memory: MemoryService;
   modelGateway: ModelGateway;
+  routines: RoutineService;
+  skills: SkillService;
+  notifications: NotificationService;
   persona(): PersonaSlots;
   shutdown(): Promise<void>;
 }
@@ -181,6 +190,8 @@ export interface AgentStackOptions extends ModelStackOptions {
   memory?: MemoryPort;
   /** false: don't serve the model gateway; a host to listen on instead of the docker bridge. */
   modelGateway?: false | { host: string; port?: number };
+  /** Tests: a fake push sender instead of Bark. */
+  notifier?: Notifier;
 }
 
 export async function openAgentStack(kernel: Kernel, options: AgentStackOptions = {}): Promise<AgentStack> {
@@ -214,9 +225,23 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     redact: (text) => redactor.redact(text),
   });
   const modelGateway = memoryGateway(kernel, stack);
+  const skills = new SkillService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    clock: kernel.clock,
+    log,
+    gateway,
+    files: new FsSkillFiles({ root: paths.skills, staging: join(paths.data, "tmp") }),
+    attachmentPath: (id) => {
+      const attachment = kernel.db.attachments.get(id);
+      if (!attachment) throw new Error(`No attachment ${id}`);
+      return kernel.attachments.absolutePath(attachment);
+    },
+  });
   const persona = (): PersonaSlots => {
     const homeCity = settings.get("profile.homeCity");
     const memoryCard = memory.card();
+    const skillsIndex = skills.catalog();
     const integrations = integrationsSummary(
       kernel.db.integrations.list(),
       kernel.db.integrations.mcpServers(),
@@ -227,6 +252,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
       timezone: settings.timezone(),
       ...(homeCity ? { homeCity } : {}),
       ...(memoryCard ? { memoryCard } : {}),
+      ...(skillsIndex ? { skillsIndex } : {}),
       workspace: paths.workspace,
     };
   };
@@ -259,6 +285,18 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     settings,
     persona,
     workspace: paths.workspace,
+    skills,
+  });
+  const routines = new RoutineService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    ids: kernel.ids,
+    clock: kernel.clock,
+    timers: kernel.timers,
+    log,
+    settings,
+    agents,
+    gateway,
   });
   const approvals = new ApprovalService({
     repos: kernel.db,
@@ -319,6 +357,21 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     workspace: paths.workspace,
     skillsDir: paths.skills,
     memory,
+    routines,
+    skills,
+  });
+  const notifications = new NotificationService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    presence: kernel.presence,
+    notifier:
+      options.notifier ??
+      new BarkNotifier({
+        url: () => settings.get("bark.url"),
+        deviceKey: () => stack.vault.system.get("bark.deviceKey"),
+      }),
+    log,
+    redact: (text) => redactor.redact(text),
   });
   const sidechats = new SideChatService({
     repos: kernel.db,
@@ -351,6 +404,8 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
   blocks.start();
   approvals.start();
   memory.start();
+  await skills.start().catch((error: unknown) => log.warn({ err: error }, "couldn't read the skills folder"));
+  notifications.start();
   if (options.modelGateway !== false) {
     const host = options.modelGateway?.host ?? settings.get("memory.gatewayHost") ?? dockerBridgeAddress();
     if (!host) log.info("model gateway off: no docker bridge on this machine");
@@ -363,6 +418,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
   // MCP servers and browse connect in the background; their tools reach agents started after.
   void integrations.connectAll().catch((error: unknown) => log.warn({ err: error }, "integrations"));
   poke.start();
+  routines.start();
   await agents.resume().catch((error: unknown) => log.error({ err: error }, "couldn't resume agents"));
   return {
     ...stack,
@@ -377,9 +433,14 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     sidechats,
     memory,
     modelGateway,
+    routines,
+    skills,
+    notifications,
     persona,
     async shutdown() {
       sweeper?.cancel();
+      routines.close();
+      notifications.close();
       memory.close();
       await modelGateway.close();
       await sidechats.closeAll();
@@ -402,6 +463,7 @@ export function stackStatus(stack: ModelStack | AgentStack): StatusContributor {
         deployed: stack.vault.system.has("honcho.jwt"),
         gateway: stack.modelGateway.address() ?? null,
       };
+      report.sections.notifications = { on: stack.notifications.configured() };
       const context = await stack.poke.context();
       report.context = {
         budget: context.budget,

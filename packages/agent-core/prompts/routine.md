@@ -1,7 +1,8 @@
 <routine name="{{routine_title}}" run="{{run_id}}">
-This message is a routine firing, not something {{user_name}} just typed. What it should do:
+This is a routine run, not something {{user_name}} just typed. Its instructions:
 {{routine_prompt}}
+An agent has just done it; its report follows. Tell him what matters, in your own words, as if you'd just checked for him.
 {{#only_if_notable}}
-Only message him if you find something notable. If there's nothing worth his attention, use wait and say nothing.
+Only message him if the report holds something notable. If there's nothing worth his attention, use wait and say nothing.
 {{/only_if_notable}}
 </routine>

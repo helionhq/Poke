@@ -14,9 +14,12 @@ import {
   LoginService,
   MemoryService,
   ModelService,
+  NotificationService,
+  RoutineService,
   SecretRedactor,
   SecretResolver,
   SideChatService,
+  SkillService,
   text,
   ToolGateway,
   type ApprovalInput,
@@ -34,9 +37,13 @@ import {
   type ModelCatalog,
   type ModelInfo,
   messageText,
+  type Notification,
+  type Notifier,
   type RuntimeCapabilities,
   type RuntimeEvent,
   type SessionSpec,
+  type SkillFiles,
+  type SkillFolder,
   silentLogger,
   type SystemSecretKey,
   type SystemSecrets,
@@ -238,6 +245,51 @@ class FakeMemory implements MemoryPort {
   }
 }
 
+/** Skill folders kept in memory: `folders` is the skills folder, `sources` what can be installed. */
+class FakeSkillFiles implements SkillFiles {
+  root = "/s";
+  folders = new Map<string, { text: string; resources: string[] }>();
+  sources = new Map<string, Array<{ folder: string; text: string }>>();
+  stages = new Map<string, Array<{ folder: string; text: string }>>();
+  async scan(): Promise<SkillFolder[]> {
+    return [...this.folders].map(([folder, f]) => ({
+      folder,
+      text: f.text,
+      location: `/s/${folder}/SKILL.md`,
+    }));
+  }
+  async stage(source: string) {
+    const found = this.sources.get(source);
+    if (!found) throw new Error(`Nothing at ${source}`);
+    const id = `stage${this.stages.size + 1}`;
+    this.stages.set(id, found);
+    return { id, skills: found.map((f) => ({ ...f, location: `/tmp/${f.folder}/SKILL.md` })) };
+  }
+  async commit(stageId: string, folder: string, name: string) {
+    const staged = this.stages.get(stageId)!.find((f) => f.folder === folder)!;
+    this.folders.set(name, { text: staged.text, resources: [] });
+    return `/s/${name}/SKILL.md`;
+  }
+  async discard(stageId: string) {
+    this.stages.delete(stageId);
+  }
+  async remove(name: string) {
+    this.folders.delete(name);
+  }
+  async resources(name: string) {
+    return this.folders.get(name)?.resources ?? [];
+  }
+}
+
+class FakeNotifier implements Notifier {
+  on = true;
+  sent: Notification[] = [];
+  configured = () => this.on;
+  async send(notification: Notification) {
+    this.sent.push(notification);
+  }
+}
+
 class MemorySecrets implements SystemSecrets {
   map = new Map<SystemSecretKey, string>();
   get = (k: SystemSecretKey) => this.map.get(k);
@@ -323,6 +375,11 @@ let live: Array<{ type: string } & Record<string, unknown>>;
 let connectStarter: ConnectionStarter["start"];
 let fakeMemory: FakeMemory;
 let memory: MemoryService;
+let skillFiles: FakeSkillFiles;
+let skills: SkillService;
+let routines: RoutineService;
+let notifier: FakeNotifier;
+let notifications: NotificationService;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "poke-agents-"));
@@ -348,13 +405,25 @@ beforeEach(() => {
     log: silentLogger,
     redact: (value) => redactor.redact(value),
   });
+  skillFiles = new FakeSkillFiles();
+  skills = new SkillService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    clock,
+    log: silentLogger,
+    files: skillFiles,
+    gateway,
+    attachmentPath: (id) => `/library/${id}`,
+  });
   const persona = () => {
     const memoryCard = memory.card();
+    const skillsIndex = skills.catalog();
     return {
       userName: "Arham",
       timezone: "Europe/Lisbon",
       workspace: "/w",
       ...(memoryCard ? { memoryCard } : {}),
+      ...(skillsIndex ? { skillsIndex } : {}),
     };
   };
   agents = new AgentsService({
@@ -369,6 +438,18 @@ beforeEach(() => {
     settings: kernel.settings,
     persona,
     workspace: "/w",
+    skills,
+  });
+  routines = new RoutineService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    ids: kernel.ids,
+    clock,
+    timers,
+    log: silentLogger,
+    settings: kernel.settings,
+    agents,
+    gateway,
   });
   vault = new MemoryVault();
   approvals = new ApprovalService({
@@ -426,8 +507,20 @@ beforeEach(() => {
     workspace: "/w",
     skillsDir: "/s",
     memory,
+    routines,
+    skills,
+  });
+  notifier = new FakeNotifier();
+  notifications = new NotificationService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    presence: kernel.presence,
+    notifier,
+    log: silentLogger,
+    redact: (value) => redactor.redact(value),
   });
   poke.start();
+  routines.start();
   live = [];
   kernel.hub.subscribe((frame) => {
     if (frame.kind === "live") live.push(frame.event as never);
@@ -436,6 +529,8 @@ beforeEach(() => {
 
 afterEach(async () => {
   memory.close();
+  routines.close();
+  notifications.close();
   await poke.close();
   kernel.close();
   rmSync(home, { recursive: true, force: true });
@@ -558,6 +653,10 @@ describe("Poke turns", () => {
       "remember",
       "request_connection",
       "request_secret",
+      "routine_create",
+      "routine_delete",
+      "routine_list",
+      "routine_update",
       "search_thread",
       "send_to_agent",
       "show_card",
@@ -1741,5 +1840,303 @@ describe("side chats", () => {
     await chats.close(chat.id);
     expect(pi.sessions[0]!.closed).toBe(true);
     expect(() => chats.get(chat.id)).toThrow(/closed/);
+  });
+});
+
+describe("routines", () => {
+  const ctx = (callId: string) => ({
+    agent: { kind: "poke" as const },
+    callId,
+    signal: new AbortController().signal,
+  });
+  const setAgents = () =>
+    models.set({ role: "agents", provider: "qwen-token-plan-individual", model: "qwen3.8-max" });
+
+  it("creates a routine from Poke, runs it on time, and Poke's reply becomes the routine's message", async () => {
+    await setPoke();
+    await setAgents();
+    let created: { output: Array<{ text: string }>; isError?: boolean } | undefined;
+    claude.script = async (_i, session) => {
+      created = (await session.spec.invoker.invoke(
+        "routine_create",
+        {
+          title: "Morning brief",
+          instructions: "Check the weather in Lisbon",
+          schedule: { kind: "cron", expr: "30 7 * * *" },
+        },
+        ctx("r1"),
+      )) as never;
+      return reply("Done: every day at 7:30.");
+    };
+    say("brief me every morning at 7:30");
+    await idle();
+    expect(created?.isError).toBeUndefined();
+    expect(created?.output[0]?.text).toContain("Every day · 7:30 AM");
+    const [routine] = routines.list();
+    expect(routine).toMatchObject({ title: "Morning brief", enabled: true, runCount: 0 });
+    expect(routine!.schedule).toMatchObject({ kind: "cron", tz: "Europe/Lisbon" });
+    expect(routine!.nextRunAt).toBeGreaterThan(now);
+    // The loop sleeps until then (capped).
+    expect(timers.live().some((t) => t.ms > 0 && t.ms <= 15 * 60_000)).toBe(true);
+
+    const before = kernel.db.messages.recent(50).length;
+    now = routine!.nextRunAt!;
+    routines.tick();
+    await until(() => executors.started.length === 1);
+    const spec = executors.started[0]!;
+    expect(spec.firstTurn).toContain("<goal>\nCheck the weather in Lisbon");
+    const task = await until(() => kernel.db.tasks.get(spec.taskId));
+    const run = await until(() => kernel.db.routines.runs(routine!.id, 5).find((r) => r.taskId));
+    expect(task.routineRunId).toBe(run.id);
+    expect(run).toMatchObject({ status: "running", late: false, taskId: task.id });
+    // Nothing shows in the thread until Poke has something to say.
+    expect(kernel.db.messages.recent(50)).toHaveLength(before);
+    expect(kernel.db.routines.get(routine!.id)).toMatchObject({
+      runCount: 1,
+      nextRunAt: routine!.nextRunAt! + 86_400_000,
+    });
+
+    claude.script = (input) => {
+      expect(input.text).toContain(`<routine name="Morning brief" run="${run.id}">`);
+      expect(input.text).toContain("Check the weather in Lisbon");
+      expect(input.text).toContain(`<agent_report agent="${task.name}"`);
+      return reply("Sunny and 18° today.");
+    };
+    executors.emit({ type: "report", taskId: task.id, text: "Sunny, 18C" });
+    await until(() => kernel.db.routines.getRun(run.id)?.status === "delivered");
+    await idle();
+    const message = pokeMessages().find((m) => m.origin.kind === "routine")!;
+    expect(message.origin).toEqual({ kind: "routine", routineId: routine!.id, runId: run.id });
+    expect(message.parts[0]).toEqual({ type: "trace", traceId: task.traceId });
+    expect(messageText(message)).toBe("Sunny and 18° today.");
+    expect(kernel.db.routines.getRun(run.id)).toMatchObject({ messageId: message.id });
+  });
+
+  it("leaves nothing in the thread when Poke waits, and turns off a one-shot after it runs", async () => {
+    await setPoke();
+    await setAgents();
+    const routine = routines.create({
+      title: "Price check",
+      instructions: "Check SFO to LIS fares",
+      schedule: { kind: "once", at: new Date(now + 3_600_000).toISOString() },
+      deliver: "only_if_notable",
+    });
+    expect(routine.nextRunAt).toBe(now + 3_600_000);
+    const before = kernel.db.messages.recent(50).length;
+    now += 3_600_000;
+    routines.tick();
+    await until(() => executors.started.length === 1);
+    expect(kernel.db.routines.get(routine.id)).toMatchObject({ enabled: false, runCount: 1 });
+    expect(kernel.db.routines.get(routine.id)?.nextRunAt).toBeUndefined();
+    await until(() => kernel.db.routines.runs(routine.id, 5).find((r) => r.taskId));
+
+    claude.script = async (input, session) => {
+      expect(input.text).toContain("Only message him if the report holds something notable");
+      await session.spec.invoker.invoke("wait", { reason: "no change" }, ctx("w1"));
+      return [];
+    };
+    executors.emit({ type: "report", taskId: executors.started[0]!.taskId, text: "Same as yesterday" });
+    const run = await until(() => kernel.db.routines.runs(routine.id, 5).find((r) => r.status === "quiet"));
+    await idle();
+    expect(run.messageId).toBeUndefined();
+    expect(kernel.db.messages.recent(50)).toHaveLength(before);
+  });
+
+  it("catches up a missed run once, marked late, and keeps the schedule going", async () => {
+    await setPoke();
+    await setAgents();
+    const routine = routines.create({
+      title: "Inbox sweep",
+      instructions: "Summarize new email",
+      schedule: { kind: "interval", everyMinutes: 60 },
+    });
+    // Poke was off for five hours.
+    now += 5 * 3_600_000 + 60_000;
+    routines.tick();
+    await until(() => executors.started.length === 1);
+    await new Promise((r) => setTimeout(r, 20));
+    expect(executors.started).toHaveLength(1);
+    const run = kernel.db.routines.runs(routine.id, 5)[0]!;
+    expect(run.late).toBe(true);
+    expect(routines.frame(run.id)?.text).toContain("This run is late");
+    expect(kernel.db.routines.get(routine.id)!.nextRunAt).toBeGreaterThan(now);
+  });
+
+  it("marks runs a restart cut short as failed", () => {
+    const routine = routines.create({
+      title: "Digest",
+      instructions: "Summarize the news",
+      schedule: { kind: "interval", everyMinutes: 60 },
+    });
+    kernel.db.routines.saveRun({
+      id: "run_old",
+      routineId: routine.id,
+      scheduledFor: now,
+      startedAt: now,
+      status: "running",
+      late: false,
+      taskId: "tsk_gone",
+    });
+    const restarted = new RoutineService({
+      repos: kernel.db,
+      hub: kernel.hub,
+      ids: kernel.ids,
+      clock: { now: () => now },
+      timers,
+      log: silentLogger,
+      settings: kernel.settings,
+      agents,
+      gateway: new ToolGateway(new SecretRedactor(() => []), silentLogger),
+    });
+    restarted.start();
+    expect(kernel.db.routines.getRun("run_old")).toMatchObject({
+      status: "failed",
+      summary: "Poke restarted before this run finished",
+    });
+    restarted.close();
+  });
+
+  it("validates schedules and edits from the app", async () => {
+    expect(() =>
+      routines.create({ title: "x", instructions: "y", schedule: { kind: "cron", expr: "* * * * *" } }),
+    ).toThrow(/every 5 minutes/);
+    expect(() =>
+      routines.create({ title: "x", instructions: "y", schedule: { kind: "once", at: "2020-01-01T09:00" } }),
+    ).toThrow(/already passed/);
+    const routine = routines.create({
+      title: "Weekly review",
+      instructions: "Summarize my week",
+      schedule: { kind: "cron", expr: "0 18 * * 5" },
+    });
+    expect(routines.describe(routine)).toBe("Every Fri · 6:00 PM");
+    const paused = routines.update(routine.id, { enabled: false });
+    expect(paused.enabled).toBe(false);
+    expect(paused.nextRunAt).toBeUndefined();
+    const resumed = routines.update(routine.id, { enabled: true, title: "Week in review" });
+    expect(resumed).toMatchObject({ enabled: true, title: "Week in review" });
+    expect(resumed.nextRunAt).toBeGreaterThan(now);
+    routines.delete(routine.id);
+    expect(routines.list()).toEqual([]);
+    expect(kernel.hub.since(0, 500).some((e) => e.event.type === "routine.deleted")).toBe(true);
+  });
+});
+
+describe("skills", () => {
+  const ctx = { agent: { kind: "poke" as const }, callId: "s1", signal: new AbortController().signal };
+  const textOf = (result: { output: Array<{ type: string; text?: string }> }) =>
+    result.output.map((o) => o.text ?? "").join("");
+  const pdf = "---\nname: pdf\ndescription: Read & fill PDF forms\n---\nUse pdfplumber.\n";
+
+  it("lists enabled skills in the catalog and loads one for Poke once per session", async () => {
+    skillFiles.folders.set("pdf", { text: pdf, resources: ["scripts/extract.py"] });
+    skillFiles.folders.set("broken", { text: "no frontmatter", resources: [] });
+    await skills.start();
+    expect(skills.list().map((s) => s.name)).toEqual(["pdf"]);
+    expect(skills.catalog()).toBe(
+      "<skill>\n<name>pdf</name>\n<description>Read &amp; fill PDF forms</description>\n<location>/s/pdf/SKILL.md</location>\n</skill>",
+    );
+    await setPoke();
+    say("fill this form");
+    await idle();
+    const session = claude.sessions[0]!;
+    expect(session.spec.systemPrompt).toContain("<available_skills>\n<skill>\n<name>pdf</name>");
+    expect(session.spec.tools.map((t) => t.name)).toEqual(
+      expect.arrayContaining(["activate_skill", "skill_install"]),
+    );
+
+    const loaded = textOf(await gateway.invoke("poke", "activate_skill", { name: "pdf" }, ctx));
+    expect(loaded).toContain('<skill_content name="pdf">\nUse pdfplumber.');
+    expect(loaded).toContain("Skill directory: /s/pdf");
+    expect(loaded).toContain("<skill_resources>\n<file>scripts/extract.py</file>\n</skill_resources>");
+    expect(textOf(await gateway.invoke("poke", "activate_skill", { name: "pdf" }, ctx))).toMatch(
+      /already loaded/,
+    );
+    skills.resetActivations();
+    expect(textOf(await gateway.invoke("poke", "activate_skill", { name: "pdf" }, ctx))).toContain(
+      "<skill_content",
+    );
+
+    skills.setEnabled("pdf", false);
+    expect(gateway.has("activate_skill")).toBe(false);
+    expect(skills.catalog()).toBeUndefined();
+
+    // A folder deleted by hand disappears on the next scan.
+    skillFiles.folders.delete("pdf");
+    await skills.sync();
+    expect(skills.list()).toEqual([]);
+  });
+
+  it("installs from a source, announces it, and gives agents the skill they were sent with", async () => {
+    skillFiles.sources.set("https://example.com/flights.zip", [
+      {
+        folder: "flights-main",
+        text: "---\nname: flights\ndescription: Find cheap flights\n---\nUse the Kiwi API.\n",
+      },
+    ]);
+    await skills.start();
+    const installed = textOf(
+      await gateway.invoke("poke", "skill_install", { source: "https://example.com/flights.zip" }, ctx),
+    );
+    expect(installed).toContain("Installed flights: Find cheap flights");
+    expect(skillFiles.folders.has("flights")).toBe(true);
+    expect(skills.list()[0]).toMatchObject({
+      name: "flights",
+      enabled: true,
+      source: "https://example.com/flights.zip",
+      warnings: [],
+    });
+    const failed = await gateway.invoke("poke", "skill_install", { source: "https://nope.example" }, ctx);
+    expect(failed.isError).toBe(true);
+
+    await setPoke();
+    say("hi");
+    await idle();
+    expect(claude.sessions[0]!.turns[0]!.text).toContain("New skill available: flights (Find cheap flights)");
+    say("again");
+    await idle();
+    expect(claude.sessions[0]!.turns[1]!.text).not.toContain("New skill available");
+
+    await models.set({ role: "agents", provider: "qwen-token-plan-individual", model: "qwen3.8-max" });
+    await agents.start(
+      { name: "trip", goal: "Find flights to Lisbon", skills: ["flights", "gone"] },
+      { traceId: agents.createTrace("msg_x").id },
+    );
+    const first = executors.started[0]!.firstTurn;
+    expect(first).toContain('Skills Poke picked for this; follow them:\n<skill_content name="flights">');
+    expect(first).toContain("Use the Kiwi API.");
+    expect(first).toContain("(No enabled skill called gone.)");
+  });
+});
+
+describe("notifications", () => {
+  it("pushes Poke's finished messages when no app is open, once, with secrets taken out", async () => {
+    notifications.start();
+    secrets.set("qwen.apiKey", "sk-sp-supersecret99");
+    await setPoke();
+    claude.script = () => reply("Booked. Your code is sk-sp-supersecret99.");
+    say("book it");
+    await idle();
+    await until(() => notifier.sent.length > 0);
+    const message = pokeMessages()[0]!;
+    expect(notifier.sent).toEqual([
+      {
+        title: "Poke",
+        body: "Booked. Your code is [vault:system].",
+        url: `poke://thread?message=${message.id}`,
+        group: "poke",
+        level: "active",
+      },
+    ]);
+    kernel.thread.saveMessage({ ...message, updatedAt: now + 1 }, "updated");
+    await new Promise((r) => setTimeout(r, 10));
+    expect(notifier.sent).toHaveLength(1);
+
+    // With the app in the foreground, nothing is pushed.
+    kernel.presence.update("conn1", "dev1", "foreground");
+    claude.script = () => reply("Anything else?");
+    say("thanks");
+    await idle();
+    await new Promise((r) => setTimeout(r, 10));
+    expect(notifier.sent).toHaveLength(1);
   });
 });

@@ -87,6 +87,23 @@ export function toolLabel(name: string, args: unknown, app?: AppRef): ToolLabel 
       return { done: "Asked a question", live: "Waiting for an answer" };
     case "tool_search":
       return { done: "Looked for a tool", live: "Looking for a tool" };
+    case "activate_skill": {
+      const name = arg(args, "name");
+      return {
+        done: typeof name === "string" ? `Read the ${name} skill` : "Read a skill",
+        live: typeof name === "string" ? `Reading the ${name} skill` : "Reading a skill",
+      };
+    }
+    case "skill_install":
+      return { done: "Installed a skill", live: "Installing a skill" };
+    case "routine_create":
+      return { done: "Set up a routine", live: "Setting up a routine" };
+    case "routine_update":
+      return { done: "Changed a routine", live: "Changing a routine" };
+    case "routine_delete":
+      return { done: "Deleted a routine", live: "Deleting a routine" };
+    case "routine_list":
+      return { done: "Checked routines", live: "Checking routines" };
     case "vault_list":
       return { done: "Checked saved logins", live: "Checking saved logins" };
     case "executor_search":

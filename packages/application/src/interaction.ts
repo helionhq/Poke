@@ -45,6 +45,8 @@ import type { EventHub } from "./core/hub.js";
 import type { PresenceTracker } from "./core/presence.js";
 import { buildDigest } from "./digest.js";
 import type { MemoryService } from "./memory.js";
+import type { RoutineService } from "./routines/service.js";
+import type { SkillService } from "./skills/service.js";
 import type { ModelService } from "./models.js";
 import type { SettingsService } from "./settings.js";
 import type { ThreadService } from "./thread.js";
@@ -72,6 +74,10 @@ export interface InteractionDeps {
   skillsDir: string;
   /** Honcho: main-thread exchanges are written here, and Poke can remember facts. */
   memory?: Pick<MemoryService, "available" | "recordExchange" | "remember">;
+  /** Routine runs: the frame an agent report is read in, and what came of it. */
+  routines?: Pick<RoutineService, "frame" | "settle">;
+  /** New skills to announce, and a fresh session forgetting activations. */
+  skills?: Pick<SkillService, "takeAnnouncements" | "resetActivations">;
 }
 
 /** A block to show under the reply of the turn that handles an input (an agent's need). */
@@ -87,7 +93,23 @@ interface PendingBlock {
 
 type Input =
   | { kind: "user"; message: Message; location?: string; timezone?: string }
-  | { kind: "system"; text: string; traceMessageId?: string; blocks?: PendingBlock[] };
+  | {
+      kind: "system";
+      text: string;
+      traceMessageId?: string;
+      blocks?: PendingBlock[];
+      /** An agent report from a routine run. */
+      routine?: RoutineInput;
+    };
+
+interface RoutineInput {
+  routineId: string;
+  runId: string;
+  late: boolean;
+  traceId: string;
+  /** The run's agent failed. */
+  failed?: string;
+}
 
 interface TurnState {
   userMessageId?: string;
@@ -98,6 +120,8 @@ interface TurnState {
   streamed: string;
   trace?: Trace;
   waited: boolean;
+  /** The turn reads a routine's result: its reply is the routine's message. */
+  routine?: RoutineInput;
 }
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -244,6 +268,7 @@ export class InteractionOrchestrator {
     } finally {
       this.#attachNeedBlocks(items, reply);
       this.#recordExchange(items, reply);
+      this.#settleRoutines(items, reply);
       this.#busy = false;
       this.#setActivity("idle");
     }
@@ -271,6 +296,9 @@ export class InteractionOrchestrator {
     const target = items.find(
       (i): i is Extract<Input, { kind: "system" }> => i.kind === "system" && !!i.traceMessageId,
     );
+    const routineItem = items.find(
+      (i): i is Extract<Input, { kind: "system" }> => i.kind === "system" && !!i.routine,
+    );
     const turn: TurnState = {
       ...(firstUser ? { userMessageId: firstUser.message.id } : {}),
       ...(target?.traceMessageId && !hasText(this.deps.thread.get(target.traceMessageId))
@@ -279,6 +307,7 @@ export class InteractionOrchestrator {
       segments: [],
       streamed: "",
       waited: false,
+      ...(routineItem?.routine ? { routine: routineItem.routine } : {}),
     };
     this.#turn = turn;
     this.#setActivity("thinking");
@@ -341,6 +370,20 @@ export class InteractionOrchestrator {
       ...(userText && users[0] ? { user: { text: userText, at: users[0].createdAt } } : {}),
       ...(pokeText && reply ? { poke: { text: pokeText, at: reply.updatedAt } } : {}),
     });
+  }
+
+  #settleRoutines(items: Input[], reply: Message | undefined): void {
+    for (const item of items) {
+      if (item.kind !== "system" || !item.routine) continue;
+      try {
+        this.deps.routines?.settle(item.routine.runId, {
+          ...(reply?.scope === "main" ? { messageId: reply.id } : {}),
+          ...(item.routine.failed ? { failed: item.routine.failed } : {}),
+        });
+      } catch (error) {
+        this.deps.log.warn({ err: error, run: item.routine.runId }, "couldn't settle a routine run");
+      }
+    }
   }
 
   /** A Poke message that holds only blocks. */
@@ -448,13 +491,23 @@ export class InteractionOrchestrator {
       this.deps.thread.saveMessage(target, "updated");
       return target;
     }
+    const routine = turn.routine;
+    // A routine run's trace message is only written now that Poke has something to say.
+    const lazyTrace = routine && turn.targetMessageId;
     const reply: Message = {
-      id: this.deps.ids.next("msg"),
+      id: lazyTrace ? turn.targetMessageId! : this.deps.ids.next("msg"),
       scope: "main",
       role: "poke",
-      parts: [],
+      parts: lazyTrace ? [{ type: "trace", traceId: routine.traceId }] : [],
       status: "streaming",
-      origin: { kind: "turn" },
+      origin: routine
+        ? {
+            kind: "routine",
+            routineId: routine.routineId,
+            runId: routine.runId,
+            ...(routine.late ? { late: true } : {}),
+          }
+        : { kind: "turn" },
       createdAt: now,
       updatedAt: now,
     };
@@ -515,6 +568,7 @@ export class InteractionOrchestrator {
       chunks.push(lines.join("\n"));
     }
     const persona = this.deps.persona();
+    const announcements = this.deps.skills?.takeAnnouncements() ?? [];
     const active = this.deps.agents
       .list()
       .map((t) => `${t.name} (${t.status === "waiting" ? "waiting for an answer" : "working"})`);
@@ -525,12 +579,32 @@ export class InteractionOrchestrator {
         presence: this.deps.presence.anyForeground() ? "open" : "in the background",
         ...(location ? { location } : {}),
         ...(active.length ? { activeTasks: active } : {}),
+        ...(announcements.length ? { extra: announcements } : {}),
       }),
     );
     return { text: chunks.join("\n\n"), ...(images.length ? { images } : {}) };
   }
 
   #outcomeInput(outcome: AgentOutcome): Input {
+    const input = this.#agentInput(outcome);
+    const { task } = outcome;
+    const frame =
+      task.routineRunId && outcome.kind !== "need" ? this.deps.routines?.frame(task.routineRunId) : undefined;
+    if (!frame || input.kind !== "system") return input;
+    return {
+      ...input,
+      text: `${frame.text}\n${input.text}`,
+      routine: {
+        routineId: frame.routineId,
+        runId: frame.runId,
+        late: frame.late,
+        traceId: task.traceId,
+        ...(outcome.kind === "failed" ? { failed: outcome.error } : {}),
+      },
+    };
+  }
+
+  #agentInput(outcome: AgentOutcome): Input {
     const { task } = outcome;
     const trace = this.deps.repos.traces.get(task.traceId);
     const attrs = `agent="${task.name}" id="${task.id}"`;
@@ -649,6 +723,7 @@ export class InteractionOrchestrator {
     this.#runtime = runtime;
     this.#assignment = assignment;
     this.#offSession = session.onEvent((event) => this.#onSessionEvent(event));
+    this.deps.skills?.resetActivations();
     if (session.ref) this.#saveSession({ ref: session.ref });
     return session;
   }

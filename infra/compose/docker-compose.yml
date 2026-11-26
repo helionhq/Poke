@@ -1,7 +1,7 @@
-# Poke's services (brief section 22). Started by `poke memory setup`, never by hand:
+# Poke's services (brief section 22). Started by `poke setup` (memory, notifications), never by hand:
 #   docker compose -p poke -f infra/compose/docker-compose.yml --env-file ~/poke/services/compose.env up -d
 # compose.env and honcho.env are rendered by the CLI from templates next to this file (0600).
-# Bark (milestone 8) and cloudflared (milestone 11) join this file in their milestones.
+# cloudflared (milestone 11) joins this file in its milestone.
 name: poke
 
 x-honcho: &honcho
@@ -75,3 +75,19 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  # Bark's push server (section 18). The Bark app registers with it at bark.url (bark.arham.im,
+  # which cloudflared maps to bark-server:8080); Poke posts pushes there. The image is Alpine, so
+  # BusyBox wget does the healthcheck.
+  bark-server:
+    image: finab/bark-server:v2.4.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${BARK_PORT:-8090}:8080"
+    volumes:
+      - ${POKE_SERVICES}/data/bark:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6

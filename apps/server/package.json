@@ -42,6 +42,7 @@
     "@poke/browse": "workspace:*",
     "@poke/model-gateway": "workspace:*",
     "@poke/memory-honcho": "workspace:*",
+    "@poke/notify-bark": "workspace:*",
     "@poke/embeddings-voyage": "workspace:*"
   },
   "devDependencies": {

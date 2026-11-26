@@ -291,3 +291,31 @@ Honcho deriver / dialectic / summary / dream ─ http://host.docker.internal:707
 | `GET /v1/memory/recall?q=` | device | what's known about him (the Search screen's "From your history") |
 | `GET /admin/memory` | admin socket | memory on, deployed, models, where the gateway listens |
 | `POST /admin/memory/prepare`, `POST /admin/memory/finish` | admin socket | the setup steps: secrets and env files; the JWT once Honcho is up |
+
+## Routines, skills, notifications (milestone 8)
+
+```
+RoutineService loop (Timers) ─ due ─ AgentsService.start (routineRunId) ─ executor
+   report ─ InteractionOrchestrator (routine frame) ─ Poke reply = routine message │ wait = quiet
+   └─ RoutineService.settle(run, messageId?)
+SkillService ─ SkillFiles (apps/server FsSkillFiles: ~/poke/skills, staging, tar/unzip, GitHub tarballs)
+   catalog ─ PersonaSlots.skillsIndex ─ every prompt     activate_skill / skill_install ─ Poke
+   forTask ─ AgentsService first turn                    announcements ─ Poke's next turn context
+NotificationService ─ hub (message events) ─ presence ─ redact ─ BarkNotifier ─ bark-server /push
+```
+
+- Domain: `SkillFiles` port; `Routine`, `RoutineRun`, `Skill`, `Notifier` were there since milestone 2.
+- Application: `routines/` (service, schedule maths on croner), `skills/` (service, SKILL.md parser),
+  `notifications.ts`. Agent-core: `tools/routines.ts`, `tools/skills.ts`, the `routine` prompt.
+- Adapters: `notify-bark`. Server: `infra/skill-files.ts`, `http/routes/routines.ts`.
+- CLI: `commands/notifications.ts` (setup step "notifications").
+
+### API (milestone 8 additions)
+
+| Route | Auth | What |
+|---|---|---|
+| `GET /v1/routines` | device | routines with their schedule in words |
+| `GET/PATCH/DELETE /v1/routines/:id` | device | one routine and its last 50 runs; pause, edit or delete it |
+| `POST /v1/routines/:id/run` | device | run it now (the schedule stays) |
+| `GET /v1/skills`, `GET/PATCH/DELETE /v1/skills/:name` | device | list, read (with the SKILL.md body), enable or disable, remove |
+| `POST /admin/notifications/test` | admin socket | a test push |

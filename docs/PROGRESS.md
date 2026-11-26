@@ -11,8 +11,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | ✅ done |
 | 6 | Integrations: Executor bridge, Keenable, browse, local MCP | ✅ done |
 | 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | ✅ done |
-| 8 | Routines + skills + notifications | ⏳ next |
-| 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | |
+| 8 | Routines + skills + notifications | ✅ done |
+| 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | ⏳ next |
 | 10 | Voice: dictation, read aloud, call mode | |
 | 11 | Live Activity, OTA updates, release pipeline, setup docs | |
 | 12 | Polish pass | |
@@ -190,7 +190,7 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   deriver, and mints Poke's admin JWT.
 - `GET /v1/memory/recall` (the Search screen's "From your history"), `/admin/memory` status,
   prepare and finish; `poke status` shows Memory and the gateway.
-- Not yet: Bark and cloudflared join the compose file in milestones 8 and 11.
+- Not yet: cloudflared joins the compose file in milestone 11 (Bark joined in milestone 8).
 - To verify live (needs Docker, a Qwen key and a Voyage key): the Honcho build at v3.6.2, the
   deriver's JSON replies through Qwen (json_object), dialectic tool calls, and dreaming.
 - Tests: 153 in total, including the gateway against pi-ai's faux provider (tool ids round trip,
@@ -199,3 +199,38 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   kept across runs, every compose variable defined), and end to end: exchanges written with secrets
   removed, remember and Undo, recall for agents at the chosen depth, the card in Poke's prompt, and
   the gateway behind its key on the real stack.
+
+### Milestone 8 — routines, skills, notifications
+- Routines (`RoutineService`): Poke's `routine_create`, `routine_update`, `routine_delete` and
+  `routine_list`; schedules once (a local time), cron (with a timezone) or every N minutes (5 or
+  more), with optional `until` and `count`, read in his timezone and said in words ("Weekdays ·
+  9:00 AM"). One loop sleeps until the next `nextRunAt` (at most 15 minutes at a time). A run starts
+  an executor with the instructions; its report reaches Poke inside the `<routine>` frame, and Poke's
+  reply becomes the routine's message (origin `routine`, the run's trace above it). If Poke waits,
+  the run is quiet and nothing shows in the thread. Missed runs are caught up once at boot, marked
+  late; one-shots turn themselves off after running; runs a restart cut short are marked failed.
+- Skills (`SkillService`): `~/poke/skills/<name>/SKILL.md` read leniently per agentskills.io, kept
+  in step with poke.db at start; the `<available_skills>` catalog in every prompt (enabled skills
+  only, no block when there are none); `activate_skill` for Poke (an enum of enabled names, once per
+  session, with the skill's resources listed); `send_to_agent`'s skills put the SKILL.md bodies in
+  the agent's first turn; `skill_install` from a URL, a GitHub repo or folder, a zip or tarball, an
+  attachment or a folder on the machine, announced to Poke in his next turn.
+- Notifications: `@poke/notify-bark` posts Bark's `/push`; `NotificationService` pushes each
+  finished Poke or system message in the main thread (redacted, 180 characters, deep link
+  `poke://thread?message=<id>`, time-sensitive when a block waits on him) only when no app is in the
+  foreground, once per message. `bark-server` v2.4.0 joined the compose file; `poke setup` step
+  "notifications" starts it, explains the Bark app, takes the device key (or the whole server URL)
+  and sends a test push. `bark.deviceKey` is a service key; `poke status` shows Push.
+- API: `GET /v1/routines`, `GET/PATCH/DELETE /v1/routines/:id`, `POST /v1/routines/:id/run`,
+  `GET /v1/skills`, `GET/PATCH/DELETE /v1/skills/:name`, `POST /admin/notifications/test`.
+- Not yet: the push icon (served with the app icon in milestone 9); `poke doctor`'s test push
+  (milestone 12); a Bark alert for provider failures comes for free, since those are system messages.
+- To verify live: a push through bark.arham.im once the tunnel exists (milestone 11), and installing
+  from a real GitHub URL (GitHub's tarball API, the system `tar`).
+- Tests: 173 in total, including schedules (DST, cron in a timezone, intervals, until and count,
+  wording), SKILL.md parsing (the spec's fields, lenient and strict cases, the YAML subset), the
+  skills folder on disk (folders, a lone SKILL.md, https downloads, bad sources), Bark's request
+  shape, and end to end: a routine created by chat that fires on time and lands as the routine's
+  message, a quiet run, a late catch-up, app edits, the catalog and `activate_skill`, an install
+  that's announced and handed to an agent, pushes with secrets taken out and none while the app is
+  open, and the routines and skills API on the real stack.

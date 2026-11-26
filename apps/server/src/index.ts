@@ -15,7 +15,9 @@ export {
   type ModelStackOptions,
 } from "./stack.js";
 export { ensureMasterKey, loadMasterKey } from "./infra/master-key.js";
+export { BarkNotifier } from "@poke/notify-bark";
 export {
+  BARK_PORT,
   finishMemory,
   HONCHO_REPO,
   HONCHO_VERSION,

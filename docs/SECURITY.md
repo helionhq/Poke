@@ -161,3 +161,18 @@ redacted before they are stored.
   and the database password live in the vault's system namespace; the rendered env files that carry
   them for Docker are 0600 under `~/poke/services`, never in the repo. The CLI never prints them.
 - Undo on a memory note deletes the conclusion in Honcho before the note changes state.
+
+## Routines, skills and notifications (milestone 8)
+
+- **Push bodies are redacted** like everything else, and short. A push carries a deep link with the
+  message id, never a secret or a vault value.
+- **Bark's device key** is a service key in the vault's system namespace, set from `poke setup` or
+  `poke config bark.deviceKey` (prompted, never an argument). bark-server is published only on
+  127.0.0.1; the tunnel (milestone 11) is its only way in.
+- **Skills are instructions Poke follows**, so they're installed only when he asks for one (a link,
+  a file, a folder). Downloads are https only, capped at 25 MB and 20 skills, unpacked in a staging
+  folder by the system `tar`/`unzip` (which refuse paths outside it), and only folders holding a
+  valid SKILL.md are copied in, under a validated name. Like every agent, a skill's scripts run with
+  Poke's full access to its machine.
+- **Routines run unattended** with the same rules as any agent: Executor-gated calls still ask (a
+  push breaks through Focus for them), and the run's report goes to Poke, never straight to him.

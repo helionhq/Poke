@@ -10,7 +10,8 @@ import { registerSetupStep, skipOrRun } from "./setup.js";
 
 // ── one API over the admin socket or the local stack ─────────────────────────────────────────
 
-async function prepare(ctx: Context): Promise<MemoryLayout> {
+/** Renders compose.env and honcho.env; every compose service needs them. */
+export async function prepare(ctx: Context): Promise<MemoryLayout> {
   if (await ctx.online())
     return (await ctx.admin.call<{ layout: MemoryLayout }>("POST", "/admin/memory/prepare")).layout;
   return prepareMemory({ system: (await ctx.localModels()).vault.system, paths: ctx.paths });
@@ -33,7 +34,7 @@ function run(command: string, args: string[], quiet = false): boolean {
   return result.status === 0;
 }
 
-function output(command: string, args: string[]): string | undefined {
+export function output(command: string, args: string[]): string | undefined {
   const result = spawnSync(command, args, { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
   return result.status === 0 ? result.stdout.trim() : undefined;
 }
@@ -53,7 +54,7 @@ function checkout(dir: string): void {
     throw new Error(`Couldn't move Honcho to ${HONCHO_VERSION}`);
 }
 
-function compose(layout: MemoryLayout, args: string[]): void {
+export function compose(layout: MemoryLayout, args: string[]): void {
   const base = ["compose", "-p", "poke", "-f", layout.composeFile, "--env-file", layout.composeEnv];
   if (!run("docker", [...base, ...args])) throw new Error(`docker compose ${args[0]} failed`);
 }

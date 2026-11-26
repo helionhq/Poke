@@ -6,6 +6,9 @@ import {
   Block,
   Device,
   Message,
+  Routine,
+  RoutineRun,
+  Skill,
   Step,
   Task,
   Trace,
@@ -277,6 +280,7 @@ export const McpServerResponse = z.object({ server: McpServer });
 export const SERVICE_KEYS = {
   "executor.token": "Executor personal access token",
   "keenable.key": "Keenable API key",
+  "bark.deviceKey": "Bark device key (from the Bark app)",
 } as const;
 export type ServiceKey = keyof typeof SERVICE_KEYS;
 export const ServiceKeyList = z.object({
@@ -299,3 +303,36 @@ export const MemoryStatus = z.object({
   gateway: z.string().nullable(),
 });
 export type MemoryStatus = z.infer<typeof MemoryStatus>;
+
+// ── routines & skills (milestone 8) ─────────────────────────────────────────────────────────────
+
+/** A routine as the app lists it: with its schedule in words. */
+export const RoutineView = Routine.extend({ scheduleText: z.string() });
+export type RoutineView = z.infer<typeof RoutineView>;
+export const RoutineList = z.object({ routines: z.array(RoutineView) });
+export const RoutineDetail = z.object({ routine: RoutineView, runs: z.array(RoutineRun) });
+export const RoutineSchedule = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("once"), at: z.string().min(1) }),
+  z.object({ kind: z.literal("cron"), expr: z.string().min(1), tz: z.string().optional() }),
+  z.object({
+    kind: z.literal("interval"),
+    everyMinutes: z.number().int().min(5),
+    startAt: z.string().optional(),
+  }),
+]);
+export const RoutinePatchRequest = z.object({
+  title: z.string().trim().min(1).max(80).optional(),
+  instructions: z.string().trim().min(1).max(4000).optional(),
+  schedule: RoutineSchedule.optional(),
+  until: z.string().optional(),
+  count: z.number().int().min(1).optional(),
+  deliver: z.enum(["always", "only_if_notable"]).optional(),
+  enabled: z.boolean().optional(),
+});
+export type RoutinePatchRequest = z.infer<typeof RoutinePatchRequest>;
+export const RoutineRunResponse = z.object({ run: RoutineRun });
+
+export const SkillList = z.object({ skills: z.array(Skill) });
+export const SkillDetail = z.object({ skill: Skill.extend({ body: z.string().optional() }) });
+export const SkillPatchRequest = z.object({ enabled: z.boolean() });
+export const NotificationTestResponse = z.object({ ok: z.literal(true) });

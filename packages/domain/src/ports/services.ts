@@ -262,3 +262,31 @@ export interface ExecutorPort {
   catalog(): Promise<ExecutorCatalogApp[]>;
   close(): Promise<void>;
 }
+
+/** A folder holding a SKILL.md, found on disk or in a downloaded source. */
+export interface SkillFolder {
+  /** Folder name (what the skill's `name` must match). */
+  folder: string;
+  /** SKILL.md text. */
+  text: string;
+  /** Absolute path to SKILL.md once installed; the staged path while staged. */
+  location: string;
+}
+
+/** The skills folder (~/poke/skills) and installing into it. */
+export interface SkillFiles {
+  readonly root: string;
+  /** Every skill folder under the root (one level deep). */
+  scan(): Promise<SkillFolder[]>;
+  /**
+   * Fetches and unpacks a source (an https URL to a SKILL.md, a GitHub folder or repo, a zip or
+   * tarball, or a local file or folder) into a staging area and lists the skill folders in it.
+   */
+  stage(source: string): Promise<{ id: string; skills: SkillFolder[] }>;
+  /** Moves a staged folder into place as `<root>/<name>`, replacing what's there. Returns SKILL.md's path. */
+  commit(stageId: string, folder: string, name: string): Promise<string>;
+  discard(stageId: string): Promise<void>;
+  remove(name: string): Promise<void>;
+  /** Bundled files of an installed skill, relative to its folder (SKILL.md left out). */
+  resources(name: string): Promise<string[]>;
+}

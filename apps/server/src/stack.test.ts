@@ -1,5 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type {
@@ -284,6 +284,74 @@ describe("agent stack over HTTP", () => {
     const text = JSON.stringify(leak.parts);
     expect(text).toContain("[vault:system]");
     expect(text).not.toContain("supersecretvalue99");
+  });
+
+  it("serves routines, skills and the test push", async () => {
+    const routine = stack.routines.create({
+      title: "Morning brief",
+      instructions: "Weather and calendar",
+      schedule: { kind: "cron", expr: "30 7 * * *" },
+    });
+    const list = (await publicApp.inject({ method: "GET", url: "/v1/routines", headers: auth() })).json();
+    expect(list.routines).toMatchObject([{ id: routine.id, scheduleText: "Every day · 7:30 AM" }]);
+    const patched = await publicApp.inject({
+      method: "PATCH",
+      url: `/v1/routines/${routine.id}`,
+      headers: auth(),
+      payload: { enabled: false },
+    });
+    expect(patched.json()).toMatchObject({ routine: { enabled: false }, runs: [] });
+    const bad = await publicApp.inject({
+      method: "PATCH",
+      url: `/v1/routines/${routine.id}`,
+      headers: auth(),
+      payload: { schedule: { kind: "interval", everyMinutes: 1 } },
+    });
+    expect(bad.statusCode).toBe(400);
+    expect(
+      (await publicApp.inject({ method: "DELETE", url: `/v1/routines/${routine.id}`, headers: auth() }))
+        .statusCode,
+    ).toBe(200);
+    expect(
+      (await publicApp.inject({ method: "GET", url: `/v1/routines/${routine.id}`, headers: auth() }))
+        .statusCode,
+    ).toBe(404);
+
+    const source = join(home, "incoming", "notes");
+    mkdirSync(source, { recursive: true });
+    writeFileSync(
+      join(source, "SKILL.md"),
+      "---\nname: notes\ndescription: Keep notes tidy\n---\nUse headings.\n",
+    );
+    // Poke installs skills (skill_install); the app lists, toggles and removes them.
+    const installed = await stack.skills.install(join(home, "incoming"));
+    expect(installed).toMatchObject([{ name: "notes", enabled: true }]);
+    const listed = (await publicApp.inject({ method: "GET", url: "/v1/skills", headers: auth() })).json();
+    expect(listed.skills).toMatchObject([
+      { name: "notes", location: join(home, "skills", "notes", "SKILL.md") },
+    ]);
+    const detail = (
+      await publicApp.inject({ method: "GET", url: "/v1/skills/notes", headers: auth() })
+    ).json();
+    expect(detail.skill).toMatchObject({ name: "notes", body: "Use headings." });
+    const off = await publicApp.inject({
+      method: "PATCH",
+      url: "/v1/skills/notes",
+      headers: auth(),
+      payload: { enabled: false },
+    });
+    expect(off.json().skill.enabled).toBe(false);
+    expect(stack.persona().skillsIndex).toBeUndefined();
+    expect(
+      (await publicApp.inject({ method: "DELETE", url: "/v1/skills/notes", headers: auth() })).statusCode,
+    ).toBe(200);
+    expect((await publicApp.inject({ method: "GET", url: "/v1/skills", headers: auth() })).json()).toEqual({
+      skills: [],
+    });
+
+    const push = await adminApp.inject({ method: "POST", url: "/admin/notifications/test" });
+    expect(push.statusCode).toBe(503);
+    expect(push.json().error.message).toMatch(/Bark isn't set up/);
   });
 
   it("runs side chats in memory", async () => {

@@ -120,6 +120,9 @@ importers:
       '@poke/model-gateway':
         specifier: workspace:*
         version: link:../../packages/adapters/model-gateway
+      '@poke/notify-bark':
+        specifier: workspace:*
+        version: link:../../packages/adapters/notify-bark
       '@poke/runtime-claude-agent-sdk':
         specifier: workspace:*
         version: link:../../packages/adapters/runtime-claude-agent-sdk

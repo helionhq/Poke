@@ -61,6 +61,11 @@ export async function statusCommand(ctx: Context, opts: { json?: boolean }): Pro
     out.push(
       `${pc.bold("Memory")}   ${memory.on ? "on" : pc.yellow(memory.deployed ? "off: Memory models not set" : "not set up")}${memory.gateway ? dim(` · gateway ${memory.gateway}`) : ""}`,
     );
+  const push = report.sections.notifications as { on: boolean } | undefined;
+  if (push)
+    out.push(
+      `${pc.bold("Push")}     ${push.on ? "Bark" : pc.yellow("not set up")}${push.on ? "" : dim(" · poke setup --only notifications")}`,
+    );
   out.push(`${pc.bold("Devices")}  ${report.devices.active} active`);
   out.push(`${pc.bold("Tasks")}    ${report.tasks.active} running`);
   const due = report.routines.nextDue;
