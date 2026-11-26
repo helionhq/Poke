@@ -159,10 +159,18 @@ export interface ConversationSession {
   /** Add input to the running turn. Returns false if nothing is running. */
   steer(input: TurnInput): Promise<boolean>;
   cancel(): Promise<void>;
-  /** Force a compaction now (manual or idle). */
-  compact(trigger: "manual" | "idle", instructions?: string): Promise<void>;
+  /** Force a compaction now (manual or idle). Resolves with what was compacted, if anything. */
+  compact(trigger: "manual" | "idle", instructions?: string): Promise<CompactionInfo | undefined>;
+  /** Events that happen outside a turn (background compactions, usage of compaction calls). */
+  onEvent(listener: (event: RuntimeEvent) => void): () => void;
   contextTokens(): number | undefined;
   close(): Promise<void>;
+}
+
+export interface CompactionInfo {
+  preTokens: number;
+  postTokens?: number;
+  summary?: string;
 }
 
 export interface ConversationRuntime {
@@ -216,7 +224,7 @@ export interface ExecutorRuntime {
   ): Promise<"delivered" | "duplicate" | "closed" | "not_found">;
   onEvent(listener: (event: ExecutorEvent) => void): () => void;
   /** Re-attach to work left by a previous process (executors survive restarts). */
-  resume(rebind: (taskId: string) => Omit<ExecutorSpec, "firstTurn"> | undefined): Promise<void>;
+  resume(tasks: Array<{ runtimeRef: string; spec: Omit<ExecutorSpec, "firstTurn"> }>): Promise<void>;
   close(): Promise<void>;
 }
 

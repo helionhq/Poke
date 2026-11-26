@@ -39,7 +39,7 @@ async function getSetting<T>(ctx: Context, key: string): Promise<T | undefined> 
   return ctx.local().settings.get(key as never) as T | undefined;
 }
 
-async function skipOrRun(title: string, later: string): Promise<boolean> {
+export async function skipOrRun(title: string, later: string): Promise<boolean> {
   const choice = unwrap(
     await p.select({
       message: title,

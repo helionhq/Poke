@@ -1,5 +1,12 @@
 import { request } from "node:http";
-import { createKernel, resolvePaths, type Kernel, type PokePaths } from "@poke/server";
+import {
+  createKernel,
+  type Kernel,
+  type ModelStack,
+  openModelStack,
+  type PokePaths,
+  resolvePaths,
+} from "@poke/server";
 
 export class AdminError extends Error {
   constructor(
@@ -70,13 +77,16 @@ export interface Context {
   online(): Promise<boolean>;
   /** In-process kernel for when the server is down (setup, login, config, model). */
   local(): Kernel;
-  close(): void;
+  /** Vault, logins and models in-process, for when the server is down. */
+  localModels(): Promise<ModelStack>;
+  close(): Promise<void>;
 }
 
 export function createContext(): Context {
   const paths = resolvePaths();
   const admin = new AdminClient(paths.adminSocket);
   let kernel: Kernel | undefined;
+  let models: Promise<ModelStack> | undefined;
   let online: boolean | undefined;
   return {
     paths,
@@ -89,7 +99,12 @@ export function createContext(): Context {
       kernel ??= createKernel({ paths });
       return kernel;
     },
-    close() {
+    localModels() {
+      models ??= openModelStack(this.local(), { claudeLive: true });
+      return models;
+    },
+    async close() {
+      if (models) (await models).close();
       kernel?.close();
     },
   };

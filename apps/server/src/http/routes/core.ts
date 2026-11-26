@@ -11,6 +11,7 @@ import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Services } from "../../services.js";
 import { IdParams, openApiDocument, route, type Surface } from "../route.js";
+import { stackStatus } from "../../stack.js";
 import { buildStatus } from "../../status.js";
 
 export function registerCoreRoutes(app: FastifyInstance, s: Services, surface: Surface): void {
@@ -69,11 +70,11 @@ export function registerCoreRoutes(app: FastifyInstance, s: Services, surface: S
 
   if (surface === "admin") {
     route(app, { method: "GET", url: "/admin/status", auth: "admin" }, () =>
-      buildStatus(s, {
-        running: true,
-        version: s.version,
-        uptimeSec: Math.round((Date.now() - s.startedAt) / 1000),
-      }),
+      buildStatus(
+        s,
+        { running: true, version: s.version, uptimeSec: Math.round((Date.now() - s.startedAt) / 1000) },
+        s.stack ? [stackStatus(s.stack)] : [],
+      ),
     );
 
     route(app, { method: "POST", url: "/admin/pairing-code", auth: "admin" }, () => {

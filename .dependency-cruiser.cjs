@@ -89,7 +89,7 @@ module.exports = {
     combinedDependencies: true,
     enhancedResolveOptions: {
       exportsFields: ["exports"],
-      conditionNames: ["source", "import", "types", "default"],
+      conditionNames: ["@poke/source", "import", "types", "default"],
       extensions: [".ts", ".tsx", ".js", ".mjs", ".json"],
       mainFields: ["module", "main", "types"],
     },

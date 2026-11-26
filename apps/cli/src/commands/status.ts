@@ -1,10 +1,10 @@
-import { buildStatus, type StatusReport } from "@poke/server";
+import { buildStatus, stackStatus, type StatusReport } from "@poke/server";
 import type { Context } from "../admin.js";
 import { ago, bad, cmd, dim, ok, pc, printJson, warn } from "../ui.js";
 
 export async function getStatus(ctx: Context): Promise<StatusReport> {
   if (await ctx.online()) return ctx.admin.call<StatusReport>("GET", "/admin/status");
-  return buildStatus(ctx.local(), { running: false });
+  return buildStatus(ctx.local(), { running: false }, [stackStatus(await ctx.localModels())]);
 }
 
 const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));

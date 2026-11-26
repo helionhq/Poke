@@ -18,7 +18,8 @@
     "boundaries": "node scripts/check-boundaries.mjs",
     "check": "pnpm boundaries && pnpm lint && pnpm typecheck && pnpm test",
     "dev:server": "pnpm --filter @poke/server dev",
-    "poke": "node --conditions=source --experimental-strip-types --disable-warning=ExperimentalWarning apps/cli/src/main.ts"
+    "poke": "node --conditions=@poke/source --experimental-strip-types --disable-warning=ExperimentalWarning apps/cli/src/main.ts",
+    "gen:prompts": "node scripts/gen-prompts.mjs"
   },
   "devDependencies": {
     "@eslint/js": "10.0.1",

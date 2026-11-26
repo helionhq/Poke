@@ -5,6 +5,7 @@ import { MAX_ATTACHMENT_BYTES } from "@poke/application";
 import type { Services } from "../services.js";
 import { installErrorHandler } from "./errors.js";
 import type { AuthMode, RouteModule, Surface } from "./route.js";
+import { registerAgentRoutes } from "./routes/agents.js";
 import { registerAttachmentRoutes } from "./routes/attachments.js";
 import { registerCoreRoutes } from "./routes/core.js";
 import { registerEventsSocket } from "./routes/events.js";
@@ -60,6 +61,7 @@ export async function buildApp(
   registerCoreRoutes(app, services, surface);
   registerThreadRoutes(app, services, surface);
   registerAttachmentRoutes(app, services, surface);
+  registerAgentRoutes(app, services, surface);
   registerEventsSocket(app, services);
   for (const register of modules) register(app, services, surface);
   return app;

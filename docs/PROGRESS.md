@@ -6,8 +6,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 |---|---|---|
 | 1 | Scaffold: monorepo, tooling, boundaries, CI, contracts/domain skeletons, docs stubs | ✅ done |
 | 2 | Server core: SQLite + migrations, thread/messages/events with seq, WS resume, attachments, pairing, admin socket, minimal CLI | ✅ done |
-| 3 | Runtimes: Pi Durable executors, Claude Agent SDK, model registry, `poke login` / `poke model`, traces, compaction, side chats | ⏳ next |
-| 4 | Blocks: catalog + `card`, state machines, actions API, agent tools, `ask_poke` parking | |
+| 3 | Runtimes: Pi Durable executors, Claude Agent SDK, model registry, `poke login` / `poke model`, traces, compaction, side chats | ✅ done |
+| 4 | Blocks: catalog + `card`, state machines, actions API, agent tools, `ask_poke` parking | ⏳ next |
 | 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | |
 | 6 | Integrations: Executor bridge, Keenable, browse, local MCP | |
 | 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | |
@@ -49,3 +49,46 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   uploads, share, WS replay and resume), admin socket end to end. 32 tests.
 - Not yet: `poke start/stop/restart` (systemd plus the Docker services) and `install.sh` arrive with
   the services they manage.
+
+### Milestone 3 — runtimes, agents, models
+- `@poke/runtime-pi-durable` (Pi Durable 1.6.1): one durable harness on `~/poke/data/durable.sqlite`.
+  Executors are ownerless conversations with Pi's coding tools (read/write/edit/bash, every call
+  through Poke's interceptor), codemode, tool search and Poke's own tools. They stream steps, report
+  usage, and park on `ask_poke` with a durable sleep on a `poke.need` signal, so a question
+  survives a restart. Poke itself can run on Pi too (Qwen), with Pi's compaction capped at the budget.
+  Provider keys come from the vault through a read-only credential store; pi-ai never reads env vars.
+- `@poke/runtime-claude-agent-sdk` (Agent SDK 0.3.332): one long-lived streaming `query()` per
+  session, fed by an input queue. Tools come from an in-process MCP server; Claude Code's own tools
+  are off for Poke and limited to Bash/Read/Write/Edit/Glob/Grep for side chats. `settingSources: []`,
+  no `--bare`, an environment built from an allowlist (no `ANTHROPIC_*` or other provider keys),
+  `CLAUDE_CODE_AUTO_COMPACT_WINDOW` set to the budget, PreCompact/PostCompact hooks, steering with
+  `priority: "now"`, resume by session id with a fresh-plus-digest fallback. Refuses any role but
+  Poke and Side chat.
+- `@poke/application`:
+  - `InteractionOrchestrator`: Poke's turn loop. Steers or queues inputs, streams one reply per turn,
+    writes system notes for problems (no model, login, usage limit with reset time), records usage and
+    the session, rebuilds from a digest when the runtime changes, runs Poke's own idle compaction
+    (5.4), and answers messages that waited for a model.
+  - `AgentsService`: executors, traces, steps, progress, questions, cancellation, resume on boot.
+  - `ToolGateway` with `SecretRedactor`: every tool call is parsed, run and redacted (raw, base64,
+    URL and JSON forms).
+  - `ModelService` and `LoginService`: no defaults; Claude only for Poke and Side chat; models and
+    reasoning levels validated against the provider's catalog; a role needs a logged-in provider.
+  - `SideChatService`: in memory only, its own model role, "Send to Poke" summary.
+- `apps/server`: `stack.ts` composes the vault (`vault.db`), logins, model catalogs (live Claude
+  list via `supportedModels()`, curated fallback), the Pi host, both runtimes, the gateway, agents,
+  Poke and side chats. New routes: context and compact, tasks, side chats, models, admin logins and
+  models.
+- `apps/cli`: `poke login [provider] [--logout] [--stdin]` (validates before saving; `anthropic`
+  runs the bundled Claude Code's `setup-token` or takes a pasted token), `poke model` (6.2:
+  role → provider → searchable model list → reasoning → voice reasoning, plus `set` / `unset` /
+  `--json`), and the matching `poke setup` steps. `poke status` shows logins and live context.
+- Tests: 84 in total. Pi with pi-ai's faux provider (tools, redaction, parking across a restart,
+  steering, compaction), Claude with a scripted fake `query()` (options, env, hooks, event mapping,
+  steering, compaction, resume fallback, rate limits), the orchestrator on the real kernel with fake
+  runtimes and timers (streaming, steering, digest after a switch, agents, traces, questions, idle
+  compaction rules, side chats), and the whole stack over HTTP with a real vault.
+- Needs a live check with real credentials (no test can do it): a Claude turn on the subscription,
+  the PreCompact hook's instructions reaching Claude Code's summary (decision 18), and a Qwen Token
+  Plan turn.
+

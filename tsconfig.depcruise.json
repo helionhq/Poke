@@ -1,5 +1,10 @@
 {
   "extends": "./tsconfig.base.json",
-  "compilerOptions": { "noEmit": true, "allowJs": false, "jsx": "react-jsx", "customConditions": ["source"] },
+  "compilerOptions": {
+    "noEmit": true,
+    "allowJs": false,
+    "jsx": "react-jsx",
+    "customConditions": ["@poke/source"]
+  },
   "include": ["packages/**/src/**/*", "apps/*/src/**/*"]
 }

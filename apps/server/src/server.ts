@@ -5,6 +5,7 @@ import { createLogger } from "./infra/logger.js";
 import { resolvePaths, type PokePaths } from "./infra/paths.js";
 import { createKernel } from "./kernel.js";
 import { servicesFromKernel, type Services } from "./services.js";
+import { type AgentStackOptions, openAgentStack } from "./stack.js";
 
 export interface ServerOptions {
   paths?: PokePaths;
@@ -13,6 +14,8 @@ export interface ServerOptions {
   /** Listen on the admin socket (default true). */
   admin?: boolean;
   modules?: RouteModule[];
+  /** Skip runtimes and agents (API-only tests). */
+  agents?: false | AgentStackOptions;
 }
 
 export interface RunningServer {
@@ -39,7 +42,8 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
   const paths = options.paths ?? resolvePaths();
   const log = createLogger({ logsDir: paths.logs });
   const kernel = createKernel({ paths, log });
-  const services = servicesFromKernel(kernel, { version: serverVersion() });
+  const stack = options.agents === false ? undefined : await openAgentStack(kernel, options.agents ?? {});
+  const services = servicesFromKernel(kernel, { version: serverVersion(), ...(stack ? { stack } : {}) });
 
   const host = options.host ?? process.env.POKE_HOST ?? "127.0.0.1";
   const port = options.port ?? Number(process.env.POKE_PORT ?? 7070);
@@ -64,6 +68,7 @@ export async function startServer(options: ServerOptions = {}): Promise<RunningS
     async close() {
       await adminApp?.close();
       await publicApp.close();
+      await stack?.shutdown();
       kernel.close();
     },
   };

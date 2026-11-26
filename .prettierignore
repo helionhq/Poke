@@ -8,3 +8,4 @@ apps/mobile/ios/
 apps/mobile/android/
 *.md
 skills-lock.json
+packages/agent-core/src/prompts.generated.ts

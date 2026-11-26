@@ -27,3 +27,31 @@ sections 3.9, 10 and 12._
   store refuses paths that escape its root.
 - The vault master key is created by `poke setup` at `~/poke/keys/master.key` (mode 0600). Under
   systemd, `LoadCredential=` can supply it instead (`$CREDENTIALS_DIRECTORY/master.key`).
+
+## Model credentials (milestone 3)
+
+- Every provider credential (`poke login`) lives in the vault's system namespace (`~/poke/data/vault.db`,
+  XChaCha20-Poly1305 under the master key), never in `poke.db`, config files, git or the
+  environment. pi-ai gets keys per request from a read-only credential store; it is never allowed
+  to read env vars.
+- The CLI never takes a secret as a command-line argument (it would land in shell history and
+  `ps`): it prompts with a hidden input, or reads `--stdin`. Each credential is validated before
+  it is saved.
+- **The Claude subscription serves only the Poke and Side chat roles.** The model registry refuses it
+  for any other role, and the Claude runtime refuses to open any other session. Executors, memory and
+  the model gateway can't reach it.
+- Claude Code runs with an environment built from an allowlist (PATH, HOME, locale, temp dirs) plus
+  `CLAUDE_CODE_OAUTH_TOKEN` and Poke's own `CLAUDE_CONFIG_DIR`. Anything starting with
+  `ANTHROPIC_`, `CLAUDE_CODE_USE_`, `AWS_`, `GOOGLE_`, `AZURE_`, `OPENAI_`, `VOYAGE_`,
+  `DASHSCOPE_` or `QWEN_` is never passed, so an `ANTHROPIC_API_KEY` can't switch it to API
+  billing. `settingSources: []` keeps user and project settings, hooks and CLAUDE.md files out;
+  `--bare` is never used.
+
+## Redaction (milestone 3)
+
+Every tool result of every agent passes through the gateway's redactor before a model, the
+transcript, a log or a notification sees it. The redaction set is every vault secret (system
+credentials and entry secret fields), refreshed when the vault changes. Each value is matched raw and
+as base64, base64url, URL-encoded and JSON-escaped text, longest first. Compaction summaries are
+redacted before they are stored.
+

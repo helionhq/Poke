@@ -3,6 +3,16 @@ export { startServer, serverVersion, type RunningServer, type ServerOptions } fr
 export { resolvePaths, ensureDirs, DATA_DIRS, type PokePaths } from "./infra/paths.js";
 export { createLogger } from "./infra/logger.js";
 export { buildApp, bearerFrom, type Surface } from "./http/app.js";
-export { servicesFromKernel, type Services } from "./services.js";
+export { servicesFromKernel, requireStack, type Services } from "./services.js";
+export {
+  openAgentStack,
+  openModelStack,
+  stackStatus,
+  type AgentStack,
+  type AgentStackOptions,
+  type ModelStack,
+  type ModelStackOptions,
+} from "./stack.js";
 export { ensureMasterKey, loadMasterKey } from "./infra/master-key.js";
+export { runClaudeSetupToken } from "@poke/runtime-claude-agent-sdk";
 export { buildStatus, registerStatus, type StatusReport, type StatusContributor } from "./status.js";

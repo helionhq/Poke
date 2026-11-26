@@ -89,3 +89,85 @@ can't set headers, the subprotocols `["poke.v1", "poke.bearer.<token>"]` (the se
 
 Clients send `{t:"ping"|"presence", presence:"foreground"|"background"}`; presence decides whether
 a notification goes out (no Bark push while any client is foregrounded).
+
+## Agents (milestone 3)
+
+`apps/server/src/stack.ts` composes everything that thinks, on top of the kernel:
+
+```
+vault.db ─ LoginService ─┬─ pi-ai models (keys per request) ─ PiModelCatalog ─┐
+                         └─ ClaudeModelCatalog (supportedModels / curated) ────┴─ ModelService
+durable.sqlite ─ PiHost ─┬─ PiExecutorRuntime ──────── AgentsService ─┐
+                         └─ PiConversationRuntime ─┐                  │
+ClaudeConversationRuntime (Agent SDK) ─────────────┴─ InteractionOrchestrator (Poke)
+                                                   └─ SideChatService
+ToolGateway (parse → run → redact) ── every tool of every agent
+```
+
+The CLI opens only the top row (`openModelStack`) when the server is down, for `poke login` and
+`poke model`.
+
+### Poke's turn loop (`InteractionOrchestrator`)
+
+- Inputs are user messages (from `ThreadService.onUserMessage`) and system inputs: agent reports,
+  failures and questions (`<agent_report agent="…" id="tsk_…">…</agent_report>`, `<agent_failed>`,
+  `<agent_question>`).
+- One turn at a time. A user message that arrives mid-turn **steers** the running turn; if the
+  runtime says the turn already ended, it queues. Queued inputs run together as one turn with one
+  `<context>` block (time, timezone, whether the app is open, location, running agents).
+- The reply streams as `message.delta` live events into one Poke message per turn, created on the
+  first text. Text segments around tool calls join with a blank line. A report turn writes into the
+  trace's message when it has no text yet.
+- The session is opened per assignment (`provider/model/reasoning`). It resumes the stored session
+  (`sessions` table, key `poke`) when the runtime is the same; otherwise it starts fresh with a digest
+  (`digest.ts`). Usage goes to the `usage` table, context tokens and cache lifetime to the session.
+- Problems become one system note each (no model, not logged in, usage limit with its reset time,
+  quota, model gone, provider error), not repeated while nothing but user messages follow.
+
+### Executors (`AgentsService` + `PiExecutorRuntime`)
+
+- `send_to_agent` (Poke's tool) creates a trace for the turn (a Poke message with a `trace` part),
+  saves the task, and starts an ownerless Pi Durable conversation with the Agents model, the executor
+  prompt, the first turn `<goal>…</goal><background>…</background>`, Pi's coding tools, codemode,
+  tool search and Poke's executor tools (`report_progress`, `ask_poke`).
+- Tool calls become steps (`step.started` / `step.completed`) with a label and an app icon; the
+  trace counts them. `report_progress` updates the task's live progress line.
+- `ask_poke` saves the question as the task's need, tells Poke, and returns `park`: the Pi tool
+  sleeps on the durable signal `poke.need`. Poke answers with `send_to_agent` and the agent id;
+  `resolveNeed` fires the signal and the tool returns the answer. A parked task survives restarts.
+- The executor's last message is its report. Poke gets it as a system input and answers under the
+  trace. Cancel aborts the conversation quietly (no report turn).
+- On boot, `AgentsService.resume()` re-binds every active task to its conversation and resumes the
+  harness.
+
+### Runtimes
+
+| | Claude Agent SDK | Pi Durable |
+|---|---|---|
+| Used for | Poke, Side chat (subscription) | Poke, Side chat, executors (Qwen Token Plan) |
+| Session | one streaming `query()` fed by an input queue; resume by session id | durable conversation in `durable.sqlite` (side chats: in memory) |
+| Poke's tools | in-process MCP server `poke`; Claude Code's own tools off (side chats: Bash/Read/Write/Edit/Glob/Grep) | Pi tools wrapping the same gateway |
+| Steering | `priority: "now"` | `submit({ whenBusy: "steer" })` |
+| Threshold compaction | Claude Code, window = budget (`CLAUDE_CODE_AUTO_COMPACT_WINDOW`), PreCompact supplies instructions | Pi, capped at the budget via `modelOverrides` |
+| Idle compaction | Poke sends `/compact` (1-hour cache only) | `conv.compact()` when `context.idleCompactPi` |
+| Credentials | `CLAUDE_CODE_OAUTH_TOKEN` in an allowlisted env | a read-only credential store over the vault |
+
+### Tool gateway
+
+`ToolGateway` holds one handler per tool with the profiles that may call it (`poke`, `executor`,
+`sidechat`). Every call is parsed with the tool's zod schema, run, and its output, details and
+structured content redacted with `SecretRedactor`. Runtimes call it through the `ToolInvoker` port;
+Pi's coding tools and Claude Code's built-ins go through the `ToolInterceptor` (prepare before,
+redact after). Vault placeholders are resolved in `prepare` from milestone 5.
+
+### API (milestone 3 additions)
+
+| Route | Auth | |
+|---|---|---|
+| `GET /v1/context`, `POST /v1/context/compact` | device | Poke's tokens, budget, last compaction / compact now |
+| `GET /v1/tasks?all=`, `GET /v1/tasks/:id`, `POST /v1/tasks/:id/cancel` | device | agents |
+| `GET /v1/models` | device | role assignments (the app shows "not set" notices) |
+| `GET/POST /v1/sidechats`, `GET/DELETE /v1/sidechats/:id` | device | open, list, read, close |
+| `POST /v1/sidechats/:id/messages`, `/cancel`, `/send-to-poke` | device | send (reply streams), stop, summary to the thread |
+| `GET /admin/logins`, `POST/DELETE /admin/logins/:id` | admin | validate and save / remove a credential |
+| `GET /admin/models`, `GET /admin/models/providers/:provider`, `PUT/DELETE /admin/models/:role` | admin | roles with allowed providers, a provider's models, set / unset |
