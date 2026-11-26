@@ -1,0 +1,21 @@
+{
+  "name": "@poke/ui-tokens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Design tokens generated from the Doop canvas.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

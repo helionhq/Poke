@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches-ignore: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Boundaries
+        run: pnpm boundaries
+      - name: Lint
+        run: pnpm lint && pnpm format:check
+      - name: Build
+        run: pnpm build
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Unit and integration tests
+        run: pnpm test
+      - name: Mobile tests
+        if: hashFiles('apps/mobile/package.json') != ''
+        run: pnpm --filter @poke/mobile test --ci
+      - name: Expo export smoke test
+        if: hashFiles('apps/mobile/app.config.ts') != ''
+        run: pnpm --filter @poke/mobile exec expo export --platform ios --output-dir /tmp/poke-export

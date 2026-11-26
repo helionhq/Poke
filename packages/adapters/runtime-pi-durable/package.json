@@ -1,0 +1,30 @@
+{
+  "name": "@poke/runtime-pi-durable",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi Durable runtime: executors, and Poke/side chats on pi-ai models.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@poke/domain": "workspace:*",
+    "@poke/agent-core": "workspace:*",
+    "@earendil-works/pi-durable": "1.6.1",
+    "@earendil-works/pi-ai": "1.6.1",
+    "@earendil-works/chord": "1.6.1",
+    "@earendil-works/pi-schema": "1.6.1",
+    "@earendil-works/pi-codemode": "1.6.1"
+  }
+}

@@ -1,0 +1,25 @@
+{
+  "name": "@poke/vault-sodium",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Vault encrypted with libsodium XChaCha20-Poly1305.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@poke/domain": "workspace:*",
+    "libsodium-wrappers": "0.8.4"
+  }
+}

@@ -1,0 +1,26 @@
+{
+  "name": "@poke/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "The `poke` command: setup, login, config, model, status, update, doctor, logs.",
+  "type": "module",
+  "bin": {
+    "poke": "./dist/main.js"
+  },
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@poke/domain": "workspace:*",
+    "@poke/contracts": "workspace:*",
+    "@poke/client": "workspace:*"
+  }
+}

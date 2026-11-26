@@ -1,0 +1,30 @@
+{
+  "name": "@poke/server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "poke-server: the composition root (HTTP + WS API, runtimes, scheduler, gateway).",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "bin": {
+    "poke-server": "./dist/main.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "dev": "node --conditions=source --experimental-strip-types --disable-warning=ExperimentalWarning --watch src/main.ts",
+    "start": "node --disable-warning=ExperimentalWarning dist/main.js"
+  },
+  "dependencies": {
+    "@poke/domain": "workspace:*",
+    "@poke/contracts": "workspace:*",
+    "@poke/blocks": "workspace:*",
+    "@poke/agent-core": "workspace:*",
+    "@poke/application": "workspace:*"
+  }
+}

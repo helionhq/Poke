@@ -1,0 +1,27 @@
+{
+  "name": "@poke/agent-core",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Prompts and framework-neutral tool definitions.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@poke/domain": "workspace:*",
+    "@poke/contracts": "workspace:*",
+    "@poke/blocks": "workspace:*",
+    "zod": "4.6.7"
+  }
+}

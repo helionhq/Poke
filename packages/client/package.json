@@ -1,0 +1,25 @@
+{
+  "name": "@poke/client",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Typed client SDK (REST + resumable WS).",
+  "type": "module",
+  "exports": {
+    ".": {
+      "source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@poke/contracts": "workspace:*",
+    "@poke/blocks": "workspace:*"
+  }
+}
