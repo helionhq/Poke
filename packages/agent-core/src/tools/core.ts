@@ -76,23 +76,74 @@ export const reportProgress = defineToolSpec({
 });
 
 /**
- * Ask Poke for something only Arham can give, and wait for it. The task parks (durably) until
- * the answer arrives. Secrets and connections join in milestones 5 and 6.
+ * Ask Poke for something only Arham can give, and wait for it. The task parks (durably) until it
+ * is resolved: a question is answered, a secret is saved to the vault, an app is connected.
  */
 export const askPoke = defineToolSpec({
   name: "ask_poke",
-  description:
-    "Ask Poke a question only Arham can answer (a choice, a preference, a missing detail) and wait for the answer. Use it only when you can't reasonably decide or find it yourself.",
-  input: z.object({
-    kind: z.literal("question"),
-    question: z.string().min(1).max(500),
-    options: z
-      .array(z.string().min(1).max(120))
-      .max(8)
-      .optional()
-      .describe("Choices to offer, when there are a few"),
-    reason: z.string().max(300).optional().describe("Why you need it, in a few words"),
-  }),
+  description: [
+    "Ask Poke for something only Arham can give, then wait: your task pauses until it's resolved.",
+    `kind "question": a choice, a preference or a missing detail you can't reasonably decide or find yourself. You get the answer.`,
+    `kind "secret": a password, API key or one-time code. Arham types it into his vault; you never see it. You get the placeholder to use (e.g. {{vault:resy.login.password}}), which is filled in when a tool runs. Prefill what you know (email, username, phone) in fields.`,
+    `kind "connection": an app that isn't connected yet (only when no connected account can do the job). You learn whether it was connected.`,
+    "Use it rarely: each one interrupts Arham.",
+  ].join("\n"),
+  input: z
+    .object({
+      kind: z.enum(["question", "secret", "connection"]),
+      reason: z
+        .string()
+        .trim()
+        .min(1)
+        .max(300)
+        .optional()
+        .describe("Why you need it, in a few words. Required for secret and connection."),
+      question: z.string().trim().min(1).max(500).optional().describe("question: what to ask"),
+      options: z
+        .array(z.string().trim().min(1).max(120))
+        .max(8)
+        .optional()
+        .describe("question: choices to offer, when there are a few"),
+      service: z.string().trim().min(1).max(80).optional().describe('secret: the service, e.g. "Resy"'),
+      fields: z
+        .record(z.string().regex(/^[a-z][a-z0-9_]{0,31}$/), z.string().max(200))
+        .optional()
+        .describe("secret: non-secret details you already know, e.g. {email: …}"),
+      secret: z
+        .object({
+          label: z.string().trim().min(1).max(40).describe('e.g. "Password", "API key", "Code"'),
+          type: z.enum(["password", "api_key", "code", "card", "text"]),
+        })
+        .optional(),
+      vaultName: z
+        .string()
+        .regex(/^[a-z0-9][a-z0-9._-]{0,63}$/)
+        .optional()
+        .describe(`secret: where it's saved, e.g. "resy.login"`),
+      app: z.string().trim().min(1).max(80).optional().describe("connection: the app id"),
+      appName: z.string().trim().min(1).max(80).optional().describe('connection: its name, e.g. "Notion"'),
+      caps: z
+        .array(z.string().trim().min(1).max(120))
+        .max(6)
+        .optional()
+        .describe("connection: what you'll do with it"),
+    })
+    .superRefine((args, ctx) => {
+      const need = (field: keyof typeof args, why: string) => {
+        if (args[field] === undefined) ctx.addIssue({ code: "custom", path: [field], message: why });
+      };
+      if (args.kind === "question") need("question", "a question needs the question");
+      if (args.kind === "secret") {
+        need("service", "a secret needs the service");
+        need("secret", "a secret needs secret.label and secret.type");
+        need("vaultName", "a secret needs a vaultName");
+        need("reason", "a secret needs a reason");
+      }
+      if (args.kind === "connection") {
+        need("app", "a connection needs the app id");
+        need("reason", "a connection needs a reason");
+      }
+    }),
   callers: ["model"],
   replay: "safe",
 });

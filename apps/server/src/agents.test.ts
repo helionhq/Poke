@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AgentsService,
+  BlockService,
   InteractionOrchestrator,
   LoginService,
   ModelService,
@@ -28,6 +29,9 @@ import {
   type SystemSecrets,
   type Timers,
   type TurnInput,
+  type VaultEntry,
+  type VaultPort,
+  type VaultPutInput,
 } from "@poke/domain";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { resolvePaths } from "./infra/paths.js";
@@ -154,6 +158,36 @@ class FakeTimers implements Timers {
   }
 }
 
+/** Just enough vault for blocks: entries with their secret values kept apart. */
+class MemoryVault implements Pick<VaultPort, "get" | "put" | "update"> {
+  entries = new Map<string, VaultEntry>();
+  values = new Map<string, Record<string, string>>();
+  get = (name: string) => this.entries.get(name);
+  put = (input: VaultPutInput): VaultEntry => {
+    const entry: VaultEntry = {
+      name: input.name as VaultEntry["name"],
+      kind: input.kind,
+      fields: input.fields ?? {},
+      secretFields: Object.keys(input.secrets),
+      usedBy: [],
+      ephemeral: input.ephemeral ?? false,
+      ...(input.expiresAt ? { expiresAt: input.expiresAt } : {}),
+      createdAt: 1,
+      updatedAt: 1,
+    };
+    this.entries.set(input.name, entry);
+    this.values.set(input.name, { ...input.secrets });
+    return entry;
+  };
+  update = (name: string, patch: Partial<Omit<VaultPutInput, "name">>): VaultEntry => {
+    const entry = this.entries.get(name)!;
+    Object.assign(entry.fields, patch.fields ?? {});
+    this.values.set(name, { ...this.values.get(name), ...patch.secrets });
+    entry.secretFields = Object.keys(this.values.get(name)!);
+    return entry;
+  };
+}
+
 class MemorySecrets implements SystemSecrets {
   map = new Map<SystemSecretKey, string>();
   get = (k: SystemSecretKey) => this.map.get(k);
@@ -230,6 +264,8 @@ let models: ModelService;
 let agents: AgentsService;
 let poke: InteractionOrchestrator;
 let gateway: ToolGateway;
+let blocks: BlockService;
+let vault: MemoryVault;
 let secrets: MemorySecrets;
 let live: Array<{ type: string } & Record<string, unknown>>;
 
@@ -259,6 +295,18 @@ beforeEach(() => {
     persona,
     workspace: "/w",
   });
+  vault = new MemoryVault();
+  blocks = new BlockService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    ids: kernel.ids,
+    clock,
+    log: silentLogger,
+    thread: kernel.thread,
+    vault,
+    agents,
+  });
+  blocks.start();
   const caps = (idleCompaction: RuntimeCapabilities["idleCompaction"]): RuntimeCapabilities => ({
     steering: true,
     idleCompaction,
@@ -281,6 +329,7 @@ beforeEach(() => {
     runtimes: { "claude-agent-sdk": claude, "pi-ai": pi },
     gateway,
     agents,
+    blocks,
     presence: kernel.presence,
     persona,
     workspace: "/w",
@@ -408,10 +457,16 @@ describe("Poke turns", () => {
     expect(turn).toMatch(/^hi\n\n<context>\ntime: .*Europe\/Lisbon/);
     expect(claude.sessions[0]!.spec).toMatchObject({ profile: "poke", budget: 272_000, persist: true });
     expect(claude.sessions[0]!.spec.tools.map((t) => t.name).sort()).toEqual([
+      "ask_choices",
       "cancel_agent",
       "list_agents",
+      "propose_action",
+      "request_connection",
+      "request_secret",
       "search_thread",
       "send_to_agent",
+      "show_card",
+      "show_draft",
       "wait",
     ]);
   });
@@ -651,6 +706,306 @@ describe("agents", () => {
       { agent: { kind: "poke" }, callId: "z", signal: new AbortController().signal },
     );
     expect(JSON.stringify(leaked)).not.toContain("sk-live-abcdef123456");
+  });
+
+  const signal = () => new AbortController().signal;
+  const secretArgs = {
+    kind: "secret",
+    service: "Resy",
+    fields: { email: "dinners@fastmail.com" },
+    secret: { label: "Password", type: "password" },
+    vaultName: "resy.login",
+    reason: "To book Lilia on Friday",
+  };
+
+  it("shows an agent's secret need as a block, puts the value only in the vault, and resumes the agent", async () => {
+    const result = await startAgentTurn();
+    const { agentId } = JSON.parse(result().output[0]!.text) as { agentId: string };
+    await idle();
+    const invoker = gateway.invoker("executor");
+    const inputs: string[] = [];
+    claude.script = (input) => {
+      inputs.push(input.text);
+      return reply("Lilia needs your Resy password to book.");
+    };
+    const ctx = { agent: { kind: "executor" as const, taskId: agentId }, callId: "s1", signal: signal() };
+    const parked = await invoker.invoke("ask_poke", secretArgs, ctx);
+    const needId = parked.park!.needId;
+    await until(() => inputs.length === 1);
+    await idle();
+    expect(inputs[0]).toContain("<agent_needs_secret");
+    expect(inputs[0]).toContain("Resy: Password");
+
+    // The block sits under Poke's reply about it.
+    const holder = pokeMessages().find((m) => m.parts.some((p) => p.type === "block"))!;
+    expect(messageText(holder)).toBe("Lilia needs your Resy password to book.");
+    const part = holder.parts.find((p) => p.type === "block")!;
+    const block = blocks.get(part.type === "block" ? part.blockId : "");
+    expect(block).toMatchObject({
+      kind: "secret_request",
+      state: "pending",
+      owner: { type: "task", taskId: agentId, needId },
+      props: {
+        title: "Resy login",
+        field: "Password",
+        vaultName: "resy.login",
+        known: [
+          { label: "Service", value: "Resy" },
+          { label: "Email", value: "dinners@fastmail.com" },
+        ],
+      },
+    });
+
+    const secret = "correct-horse-battery-staple";
+    const acted = await blocks.act(block.id, {
+      action: "save",
+      payload: { value: secret },
+      clientActionId: "act-00001",
+    });
+    const placeholder = "{{vault:resy.login.password}}";
+    expect(acted.block).toMatchObject({
+      state: "saved",
+      fallback: "Resy login ✓ Saved to your Vault",
+      resolution: { status: "saved", vaultName: "resy.login", placeholder },
+    });
+    expect(vault.values.get("resy.login")).toEqual({ password: secret });
+    expect(vault.get("resy.login")).toMatchObject({
+      kind: "login",
+      fields: { service: "Resy", email: "dinners@fastmail.com" },
+    });
+    expect(executors.needs.at(-1)).toEqual({
+      taskId: agentId,
+      needId,
+      value: { status: "saved", vaultName: "resy.login", placeholder },
+    });
+    expect(kernel.db.tasks.get(agentId)).toMatchObject({ status: "running" });
+
+    // The value is nowhere but the vault: not in messages, blocks, the event log or the action log.
+    const everywhere = JSON.stringify([
+      kernel.db.messages.recent(100),
+      kernel.db.blocks.byTask(agentId),
+      kernel.db.events.since(0, 1000),
+      kernel.db.blocks.findAction("act-00001"),
+      live,
+      inputs,
+    ]);
+    expect(everywhere).not.toContain(secret);
+
+    // A retry gets the same answer without acting twice; a reused id for something else is refused.
+    const again = await blocks.act(block.id, {
+      action: "save",
+      payload: { value: secret },
+      clientActionId: "act-00001",
+    });
+    expect(again.duplicate).toBe(true);
+    expect(executors.needs).toHaveLength(1);
+    await expect(
+      blocks.act(block.id, { action: "expire", clientActionId: "act-00001" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+    await expect(
+      blocks.act(block.id, { action: "save", payload: { value: "x" }, clientActionId: "act-00002" }),
+    ).rejects.toMatchObject({ code: "conflict" });
+
+    const resumed = await invoker.invoke("ask_poke", secretArgs, {
+      ...ctx,
+      resume: { needId, value: executors.needs[0]!.value },
+    });
+    expect(resumed.output[0]).toMatchObject({ type: "text" });
+    expect(resumed.output[0]!.type === "text" && resumed.output[0]!.text).toContain(placeholder);
+  });
+
+  it("refuses an incomplete need, and expires a need's block when its agent is cancelled", async () => {
+    const result = await startAgentTurn();
+    const { agentId } = JSON.parse(result().output[0]!.text) as { agentId: string };
+    await idle();
+    const invoker = gateway.invoker("executor");
+    const ctx = { agent: { kind: "executor" as const, taskId: agentId }, callId: "n1", signal: signal() };
+    const bad = await invoker.invoke("ask_poke", { kind: "secret", service: "Resy" }, ctx);
+    expect(bad.isError).toBe(true);
+
+    claude.script = () => reply("It needs Notion to find the notes.");
+    await invoker.invoke(
+      "ask_poke",
+      { kind: "connection", app: "notion", appName: "Notion", reason: "To find the design review notes" },
+      { ...ctx, callId: "n2" },
+    );
+    await idle();
+    const block = kernel.db.blocks.byTask(agentId)[0]!;
+    expect(block).toMatchObject({
+      kind: "connect_request",
+      state: "pending",
+      props: { kind: "app", app: "notion", title: "Connect Notion" },
+    });
+    // Without integrations there's nothing to sign in with yet.
+    await expect(
+      blocks.act(block.id, { action: "connect", clientActionId: "conn-0001" }),
+    ).rejects.toMatchObject({
+      code: "unavailable",
+    });
+    expect(blocks.get(block.id).state).toBe("pending");
+
+    await gateway.invoke(
+      "poke",
+      "cancel_agent",
+      { agentId },
+      { agent: { kind: "poke" }, callId: "x", signal: signal() },
+    );
+    await until(() => blocks.get(block.id).state === "expired");
+    expect(blocks.get(block.id).fallback).toBe("Connect Notion: not connected");
+  });
+
+  it("shows a need's block on its own when Poke can't reply", async () => {
+    const result = await startAgentTurn();
+    const { agentId } = JSON.parse(result().output[0]!.text) as { agentId: string };
+    await idle();
+    models.unset("poke");
+    await gateway.invoker("executor").invoke("ask_poke", secretArgs, {
+      agent: { kind: "executor", taskId: agentId },
+      callId: "s1",
+      signal: signal(),
+    });
+    await idle();
+    const block = kernel.db.blocks.byTask(agentId)[0]!;
+    const holder = kernel.thread.get(block.messageId)!;
+    expect(holder).toMatchObject({ role: "poke", status: "complete" });
+    expect(holder.parts).toEqual([{ type: "block", blockId: block.id }]);
+  });
+});
+
+describe("Poke's blocks", () => {
+  const signal = () => new AbortController().signal;
+  const call = (session: FakeSession, tool: string, args: unknown) =>
+    session.spec.invoker.invoke(tool, args, { agent: { kind: "poke" }, callId: tool, signal: signal() });
+  const blockOf = (kind: string) =>
+    kernel.db.messages
+      .recent(50)
+      .flatMap((m) => m.parts)
+      .flatMap((p) => (p.type === "block" ? [kernel.db.blocks.get(p.blockId)!] : []))
+      .find((b) => b.kind === kind)!;
+
+  it("sends a picked choice as Arham's next message", async () => {
+    await setPoke();
+    claude.script = async (_i, session) => {
+      await call(session, "ask_choices", {
+        options: [{ label: "Friday 8:15" }, { label: "Saturday 7:00", hint: "bar seats" }],
+      });
+      return reply("Which works?");
+    };
+    say("book dinner at Lilia");
+    await idle();
+    const block = blockOf("choices");
+    expect(kernel.thread.get(block.messageId)).toMatchObject({ role: "poke", status: "complete" });
+
+    const inputs: string[] = [];
+    claude.script = (input) => {
+      inputs.push(input.text);
+      return reply("Booking Saturday.");
+    };
+    await blocks.act(block.id, { action: "pick", payload: { index: 1 }, clientActionId: "pick-0001" });
+    await until(() => inputs.length === 1);
+    await idle();
+    expect(inputs[0]).toContain("Saturday 7:00");
+    expect(blocks.get(block.id)).toMatchObject({
+      state: "answered",
+      resolution: { answer: "Saturday 7:00" },
+    });
+    const users = kernel.db.messages
+      .recent(10)
+      .filter((m) => m.role === "user")
+      .map(messageText);
+    expect(users).toContain("Saturday 7:00");
+  });
+
+  it("tells Poke what Arham did with an action, a draft and a card; refuses bad props", async () => {
+    await setPoke();
+    const results: Array<{ isError?: boolean; text: string }> = [];
+    claude.script = async (_i, session) => {
+      for (const [tool, args] of [
+        [
+          "propose_action",
+          {
+            kind: "Book a table",
+            title: "Lilia",
+            body: "Saturday at 7:00 PM · 2 people",
+            confirm: "Book",
+            change: "Change",
+          },
+        ],
+        [
+          "show_draft",
+          {
+            kind: "Email",
+            to: "maya@northwind.co",
+            subject: "Friday",
+            body: "Hi Maya,",
+            primary: { label: "Send from Gmail" },
+          },
+        ],
+        [
+          "show_card",
+          {
+            title: "Gift note",
+            root: "s",
+            nodes: {
+              s: { type: "stack", children: ["f", "b"] },
+              f: { type: "field", key: "note", label: "Note" },
+              b: { type: "button", label: "Send", actionId: "send" },
+            },
+          },
+        ],
+        ["show_card", { title: "Broken", root: "a", nodes: { a: { type: "row", children: ["a"] } } }],
+      ] as const) {
+        const out = await call(session, tool, args);
+        results.push({
+          isError: out.isError,
+          text: out.output[0]?.type === "text" ? out.output[0].text : "",
+        });
+      }
+      return reply("Here's the plan.");
+    };
+    say("plan friday");
+    await idle();
+    expect(results.slice(0, 3).every((r) => !r.isError && r.text.startsWith("Shown (blk_"))).toBe(true);
+    expect(results[3]).toMatchObject({ isError: true });
+    expect(results[3]!.text).toContain("contains itself");
+    const holder = pokeMessages().find((m) => messageText(m) === "Here's the plan.")!;
+    expect(holder.parts.filter((p) => p.type === "block")).toHaveLength(3);
+
+    const inputs: string[] = [];
+    claude.script = (input) => {
+      inputs.push(input.text);
+      return reply("ok");
+    };
+    await blocks.act(blockOf("action").id, { action: "confirm", clientActionId: "conf-0001" });
+    await until(() => inputs.length === 1);
+    await idle();
+    expect(inputs[0]).toMatch(
+      /<block_action block="blk_\w+" kind="action" title="Lilia">\nconfirmed\n<\/block_action>/,
+    );
+
+    const draft = blockOf("draft");
+    await blocks.act(draft.id, {
+      action: "edit",
+      payload: { body: "Hi Maya, see you Friday at 8." },
+      clientActionId: "edit-0001",
+    });
+    expect(kernel.db.messages.search({ query: "Friday at 8", limit: 5 }).map((h) => h.message.id)).toContain(
+      draft.messageId,
+    );
+    await blocks.act(draft.id, { action: "primary", clientActionId: "send-0001" });
+    await until(() => inputs.length === 2);
+    await idle();
+    expect(inputs[1]).toContain('tapped "Send from Gmail"');
+    expect(inputs[1]).toContain("Hi Maya, see you Friday at 8.");
+
+    await blocks.act(blockOf("card").id, {
+      action: "press",
+      payload: { actionId: "send", values: { note: "Happy 30th!" } },
+      clientActionId: "press-001",
+    });
+    await until(() => inputs.length === 3);
+    await idle();
+    expect(inputs[2]).toContain('pressed send\nvalues: {"note":"Happy 30th!"}');
   });
 });
 

@@ -279,4 +279,84 @@ describe("agent stack over HTTP", () => {
     const settings = JSON.stringify(kernel.settings.all());
     expect(settings).not.toContain("keepme");
   });
+
+  it("acts on blocks: a secret goes to the real vault and is redacted from then on", async () => {
+    const now = Date.now();
+    const message = {
+      id: kernel.ids.next("msg"),
+      scope: "main" as const,
+      role: "poke" as const,
+      parts: [],
+      status: "complete" as const,
+      origin: { kind: "turn" as const },
+      createdAt: now,
+      updatedAt: now,
+    };
+    kernel.thread.saveMessage(message, "created");
+    const block = stack.blocks.attach(message, {
+      kind: "secret_request",
+      props: {
+        service: "OpenWeather",
+        title: "OpenWeather API key",
+        note: "For the morning weather",
+        field: "API key",
+        secretType: "api_key",
+        vaultName: "openweather",
+      },
+      owner: { type: "poke" },
+    });
+    const get = await publicApp.inject({ method: "GET", url: `/v1/blocks/${block.id}`, headers: auth() });
+    expect(get.json().block).toMatchObject({ kind: "secret_request", state: "pending" });
+    expect(
+      (await publicApp.inject({ method: "GET", url: "/v1/blocks/blk_nope", headers: auth() })).statusCode,
+    ).toBe(404);
+
+    const url = `/v1/blocks/${block.id}/actions`;
+    const short = await publicApp.inject({
+      method: "POST",
+      url,
+      headers: auth(),
+      payload: { action: "save", payload: { value: "x" }, clientActionId: "short" },
+    });
+    expect(short.statusCode).toBe(400);
+    const empty = await publicApp.inject({
+      method: "POST",
+      url,
+      headers: auth(),
+      payload: { action: "save", payload: { value: "" }, clientActionId: "save-empty-1" },
+    });
+    expect(empty.statusCode).toBe(400);
+    expect(empty.json().error.message).toBe("That value can't be saved");
+
+    const key = "owm-7f3a9c2e5b1d4f6a8c0e";
+    const saved = await publicApp.inject({
+      method: "POST",
+      url,
+      headers: auth(),
+      payload: { action: "save", payload: { value: key }, clientActionId: "save-0001" },
+    });
+    expect(saved.statusCode).toBe(200);
+    expect(saved.body).not.toContain(key);
+    expect(saved.json()).toMatchObject({
+      duplicate: false,
+      block: { state: "saved", resolution: { placeholder: "{{vault:openweather.api_key}}" } },
+    });
+    expect(stack.vault.resolve("openweather", "api_key")).toBe(key);
+    // From now on tool output is redacted against it.
+    await until(() => stack.secrets().includes(key));
+    const retry = await publicApp.inject({
+      method: "POST",
+      url,
+      headers: auth(),
+      payload: { action: "save", payload: { value: key }, clientActionId: "save-0001" },
+    });
+    expect(retry.json()).toMatchObject({ duplicate: true, block: { state: "saved" } });
+    const twice = await publicApp.inject({
+      method: "POST",
+      url,
+      headers: auth(),
+      payload: { action: "save", payload: { value: key }, clientActionId: "save-0002" },
+    });
+    expect(twice.statusCode).toBe(409);
+  });
 });

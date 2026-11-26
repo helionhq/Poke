@@ -115,3 +115,27 @@ export const ShareResponse = z.object({ messageId: z.string(), deepLink: z.strin
 export const DeviceList = z.object({ devices: z.array(Device) });
 
 export const ShareTokenResponse = z.object({ token: z.string(), device: Device });
+
+// ── blocks (section 9) ───────────────────────────────────────────────────────────────────────
+
+/**
+ * An action on a block. `clientActionId` makes it idempotent: a retry gets the first answer.
+ * A secret_request `save` payload holds the secret; the server writes it to the vault and never
+ * stores, logs or echoes it.
+ */
+export const BlockActionRequest = z.object({
+  action: z.string().min(1).max(40),
+  payload: z.record(z.string(), z.unknown()).optional(),
+  clientActionId: z.string().min(8).max(80),
+});
+export type BlockActionRequest = z.infer<typeof BlockActionRequest>;
+
+export const BlockActionResponse = z.object({
+  block: Block,
+  /** e.g. `{url}` to open for a connect_request `connect`. */
+  result: z.record(z.string(), z.unknown()).optional(),
+  duplicate: z.boolean(),
+});
+export type BlockActionResponse = z.infer<typeof BlockActionResponse>;
+
+export const BlockResponse = z.object({ block: Block });

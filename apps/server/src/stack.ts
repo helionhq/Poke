@@ -3,6 +3,7 @@ import { join } from "node:path";
 import type { PersonaSlots } from "@poke/agent-core";
 import {
   AgentsService,
+  BlockService,
   InteractionOrchestrator,
   LoginService,
   type LoginValidator,
@@ -127,6 +128,7 @@ export interface AgentStack extends ModelStack {
   gateway: ToolGateway;
   host: PiHost;
   agents: AgentsService;
+  blocks: BlockService;
   poke: InteractionOrchestrator;
   sidechats: SideChatService;
   persona(): PersonaSlots;
@@ -184,6 +186,16 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     persona,
     workspace: paths.workspace,
   });
+  const blocks = new BlockService({
+    repos: kernel.db,
+    hub: kernel.hub,
+    ids: kernel.ids,
+    clock: kernel.clock,
+    log,
+    thread: kernel.thread,
+    vault: stack.vault,
+    agents,
+  });
   const poke = new InteractionOrchestrator({
     repos: kernel.db,
     hub: kernel.hub,
@@ -198,6 +210,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     runtimes,
     gateway,
     agents,
+    blocks,
     presence: kernel.presence,
     persona,
     workspace: paths.workspace,
@@ -219,6 +232,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     skillsDir: paths.skills,
   });
   // Tools first, then executors pick up where they left off before the restart.
+  blocks.start();
   poke.start();
   await agents.resume().catch((error: unknown) => log.error({ err: error }, "couldn't resume agents"));
   return {
@@ -226,6 +240,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     gateway,
     host,
     agents,
+    blocks,
     poke,
     sidechats,
     persona,

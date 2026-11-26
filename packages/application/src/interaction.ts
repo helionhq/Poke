@@ -1,4 +1,4 @@
-import { CORE_TOOLS, interactionPrompt, type PersonaSlots, turnContext } from "@poke/agent-core";
+import { BLOCK_TOOLS, CORE_TOOLS, interactionPrompt, type PersonaSlots, turnContext } from "@poke/agent-core";
 import {
   type AgentActivity,
   type CacheLifetime,
@@ -22,13 +22,16 @@ import {
   type Repositories,
   type RuntimeEvent,
   type SystemNoteReason,
+  type Task,
+  type TaskNeed,
   type Timers,
   type Trace,
   type TurnInput,
 } from "@poke/domain";
-import type { AgentOutcome, AgentsService } from "./agents.js";
+import type { AgentOutcome, AgentsService, NeedInput } from "./agents.js";
 import { recordUsage } from "./agents.js";
 import type { AttachmentService } from "./attachments.js";
+import type { BlockService } from "./blocks.js";
 import type { EventHub } from "./core/hub.js";
 import type { PresenceTracker } from "./core/presence.js";
 import { buildDigest } from "./digest.js";
@@ -52,15 +55,24 @@ export interface InteractionDeps {
   runtimes: Partial<Record<ProviderKind, ConversationRuntime>>;
   gateway: ToolGateway;
   agents: AgentsService;
+  blocks: BlockService;
   presence: PresenceTracker;
   persona: () => PersonaSlots;
   workspace: string;
   skillsDir: string;
 }
 
+/** A block to show under the reply of the turn that handles an input (an agent's need). */
+interface PendingBlock {
+  kind: string;
+  props: Record<string, unknown>;
+  taskId: string;
+  needId: string;
+}
+
 type Input =
   | { kind: "user"; message: Message; location?: string; timezone?: string }
-  | { kind: "system"; text: string; traceMessageId?: string };
+  | { kind: "system"; text: string; traceMessageId?: string; blocks?: PendingBlock[] };
 
 interface TurnState {
   userMessageId?: string;
@@ -108,6 +120,7 @@ export class InteractionOrchestrator {
       }),
     );
     this.deps.agents.onOutcome((outcome) => this.#enqueue(this.#outcomeInput(outcome)));
+    this.deps.blocks.onPokeAction((notice) => this.#enqueue({ kind: "system", text: notice.text }));
     // Messages sent while Poke had no model get answered once one is set.
     this.deps.hub.subscribe((frame) => {
       if (frame.kind !== "event") return;
@@ -207,12 +220,14 @@ export class InteractionOrchestrator {
     if (this.#busy || this.#closed || this.#queue.length === 0) return;
     this.#busy = true;
     const items = this.#queue.splice(0);
+    let reply: Message | undefined;
     try {
-      await this.#runTurn(items);
+      reply = await this.#runTurn(items);
     } catch (error) {
       this.deps.log.error({ err: error }, "poke turn failed");
       this.#note(`Poke couldn't reply: ${errorText(error)}`, "provider_error");
     } finally {
+      this.#attachNeedBlocks(items, reply);
       this.#busy = false;
       this.#setActivity("idle");
     }
@@ -222,18 +237,19 @@ export class InteractionOrchestrator {
 
   // ── turns ──────────────────────────────────────────────────────────────────────────────────
 
-  async #runTurn(items: Input[]): Promise<void> {
+  /** Runs one turn; the reply message it wrote, if any. */
+  async #runTurn(items: Input[]): Promise<Message | undefined> {
     const assignment = this.deps.models.get("poke");
     if (!assignment) {
       this.#note("Poke has no model yet. Run `poke model` on Poke's machine.", "no_model");
-      return;
+      return undefined;
     }
     let session: ConversationSession;
     try {
       session = await this.#ensureSession(assignment);
     } catch (error) {
       this.#sessionError(error, assignment);
-      return;
+      return undefined;
     }
     const firstUser = items.find((i): i is Extract<Input, { kind: "user" }> => i.kind === "user");
     const target = items.find(
@@ -262,6 +278,48 @@ export class InteractionOrchestrator {
       this.#turn = undefined;
     }
     for (const error of errors) this.#runtimeError(error, assignment);
+    return turn.reply?.status === "complete" ? turn.reply : undefined;
+  }
+
+  /**
+   * Agents' secret and connection needs: the block goes under Poke's reply about it, or on its
+   * own when Poke couldn't reply, so the agent is never stuck behind a failed turn.
+   */
+  #attachNeedBlocks(items: Input[], reply: Message | undefined): void {
+    const pending = items.flatMap((i) => (i.kind === "system" && i.blocks ? i.blocks : []));
+    if (pending.length === 0) return;
+    let target = reply?.scope === "main" ? reply : undefined;
+    for (const block of pending) {
+      const task = this.deps.repos.tasks.get(block.taskId);
+      if (task?.status !== "waiting" || task.need?.id !== block.needId) continue;
+      try {
+        target ??= this.#blockMessage();
+        this.deps.blocks.attach(target, {
+          kind: block.kind,
+          props: block.props,
+          owner: { type: "task", taskId: block.taskId, needId: block.needId },
+        });
+      } catch (error) {
+        this.deps.log.error({ err: error, task: block.taskId }, "couldn't show an agent's need");
+      }
+    }
+  }
+
+  /** A Poke message that holds only blocks. */
+  #blockMessage(): Message {
+    const now = this.deps.clock.now();
+    const message: Message = {
+      id: this.deps.ids.next("msg"),
+      scope: "main",
+      role: "poke",
+      parts: [],
+      status: "complete",
+      origin: { kind: "turn" },
+      createdAt: now,
+      updatedAt: now,
+    };
+    this.deps.thread.saveMessage(message, "created");
+    return message;
   }
 
   #onTurnEvent(event: RuntimeEvent, turn: TurnState): void {
@@ -451,14 +509,46 @@ export class InteractionOrchestrator {
           text: `<agent_failed ${attrs}>\n${outcome.error}\n</agent_failed>`,
           ...(trace ? { traceMessageId: trace.messageId } : {}),
         };
+      case "need":
+        return this.#needInput(task, outcome.need, attrs);
+    }
+  }
+
+  #needInput(task: Task, need: TaskNeed, attrs: string): Input {
+    const user = this.deps.persona().userName;
+    switch (need.kind) {
       case "question": {
-        const options = outcome.need.options?.length ? `\noptions: ${outcome.need.options.join(" | ")}` : "";
-        const reason = outcome.need.reason ? `\nwhy: ${outcome.need.reason}` : "";
+        const options = need.options?.length ? `\noptions: ${need.options.join(" | ")}` : "";
+        const reason = need.reason ? `\nwhy: ${need.reason}` : "";
         return {
           kind: "system",
-          text: `<agent_question ${attrs}>\n${outcome.need.question}${options}${reason}\n</agent_question>\nIt waits until you answer with send_to_agent (agentId "${task.id}"). If only ${this.deps.persona().userName} can answer, ask first.`,
+          text: `<agent_question ${attrs}>\n${need.question}${options}${reason}\n</agent_question>\nIt waits until you answer with send_to_agent (agentId "${task.id}"). If only ${user} can answer, ask first.`,
         };
       }
+      case "secret":
+        return {
+          kind: "system",
+          text: `<agent_needs_secret ${attrs}>\n${need.service}: ${need.secret.label}\nwhy: ${need.reason}\n</agent_needs_secret>\nA card under your reply asks ${user} for it; it goes straight into the vault and the agent carries on once it's saved. Say in a line what's needed and why. Never ask for it in the chat.`,
+          blocks: [
+            { kind: "secret_request", props: secretRequestProps(need), taskId: task.id, needId: need.id },
+          ],
+        };
+      case "connection": {
+        const name = need.appName ?? need.app;
+        return {
+          kind: "system",
+          text: `<agent_needs_connection ${attrs}>\n${name}\nwhy: ${need.reason}\n</agent_needs_connection>\nA Connect card for ${name} is shown under your reply; the agent carries on once ${user} connects it, or hears that he said not now. Say in a line why it's needed.`,
+          blocks: [
+            { kind: "connect_request", props: connectRequestProps(need), taskId: task.id, needId: need.id },
+          ],
+        };
+      }
+      case "approval":
+        // The tool gate creates approval blocks itself (milestone 5).
+        return {
+          kind: "system",
+          text: `<agent_waiting ${attrs}>\nWaiting for ${user} to approve a tool call.\n</agent_waiting>`,
+        };
     }
   }
 
@@ -630,7 +720,7 @@ export class InteractionOrchestrator {
             name: t.name,
             status: t.status,
             goal: t.goal,
-            ...(t.need?.kind === "question" ? { waitingFor: t.need.question } : {}),
+            ...(t.need ? { waitingFor: needSummary(t.need) } : {}),
             ...(t.error ? { error: t.error } : {}),
           })),
         ),
@@ -695,17 +785,81 @@ export class InteractionOrchestrator {
     gateway.register(
       handler(CORE_TOOLS.askPoke, (args, ctx) => {
         if (ctx.agent.kind !== "executor") return text("Only agents can ask Poke.", true);
-        if (ctx.resume) {
-          const value = ctx.resume.value as { answer?: string; expired?: boolean } | undefined;
-          if (value?.expired)
-            return text("No answer came in time. Carry on without it, or report what's blocked.");
-          return text(`Answer: ${value?.answer ?? ""}`);
-        }
+        if (ctx.resume) return text(resumeText(args.kind, ctx.resume.value));
         const needId = `need_${ctx.agent.taskId}_${ctx.callId}`.replace(/[^A-Za-z0-9_]/g, "_");
-        agents.ask(ctx.agent.taskId, args, needId);
+        agents.ask(ctx.agent.taskId, needFromArgs(args), needId);
         return { output: [], park: { needId } };
       }),
       ["executor"],
+    );
+    this.#registerBlockTools();
+  }
+
+  /** Poke's block tools: each shows one block under the reply being written. */
+  #registerBlockTools(): void {
+    const { gateway, blocks } = this.deps;
+    const show = (kind: string, props: Record<string, unknown>, after: string) => {
+      const target = this.#turn ? this.#ensureReply(this.#turn) : this.#blockMessage();
+      const block = blocks.attach(target, { kind, props, owner: { type: "poke" } });
+      return text(`Shown (${block.id}). ${after}`);
+    };
+    const user = () => this.deps.persona().userName;
+    gateway.register(
+      handler(BLOCK_TOOLS.askChoices, (args) =>
+        show("choices", args, `${user()}'s answer arrives as his next message. End your turn now.`),
+      ),
+      ["poke"],
+    );
+    gateway.register(
+      handler(BLOCK_TOOLS.showDraft, (args) =>
+        show(
+          "draft",
+          args,
+          args.primary
+            ? `If he taps "${args.primary.label}" you get a <block_action> with the final text.`
+            : "He can edit and copy it.",
+        ),
+      ),
+      ["poke"],
+    );
+    gateway.register(
+      handler(BLOCK_TOOLS.proposeAction, (args) =>
+        show("action", args, "Wait for the <block_action> before doing it."),
+      ),
+      ["poke"],
+    );
+    gateway.register(
+      handler(BLOCK_TOOLS.showCard, (args) =>
+        show("card", args, "Button presses arrive as <block_action> inputs."),
+      ),
+      ["poke"],
+    );
+    gateway.register(
+      handler(BLOCK_TOOLS.requestSecret, (args) =>
+        show(
+          "secret_request",
+          { ...args, title: args.title, ...(args.secretType === "code" ? { ephemeral: true } : {}) },
+          "You get a <block_action> with the placeholder once it's saved.",
+        ),
+      ),
+      ["poke"],
+    );
+    gateway.register(
+      handler(BLOCK_TOOLS.requestConnection, (args) =>
+        show(
+          "connect_request",
+          {
+            kind: "app",
+            app: args.app,
+            title: `Connect ${args.appName}`,
+            note: args.note,
+            ...(args.caps ? { caps: args.caps } : {}),
+            ...(args.icon ? { icon: args.icon } : {}),
+          },
+          "You get a <block_action> when it's connected or he says not now.",
+        ),
+      ),
+      ["poke"],
     );
   }
 
@@ -820,4 +974,114 @@ function setText(message: Message, value: string): void {
 
 function errorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+type AskPokeArgs = ReturnType<typeof CORE_TOOLS.askPoke.parse>;
+
+/** ask_poke's arguments as a task need (the schema has already checked each kind's fields). */
+function needFromArgs(args: AskPokeArgs): NeedInput {
+  switch (args.kind) {
+    case "question":
+      return {
+        kind: "question",
+        question: args.question ?? "",
+        ...(args.options ? { options: args.options } : {}),
+        ...(args.reason ? { reason: args.reason } : {}),
+      };
+    case "secret": {
+      const secret = args.secret ?? { label: "Password", type: "password" as const };
+      return {
+        kind: "secret",
+        service: args.service ?? "",
+        fields: args.fields ?? {},
+        secret,
+        vaultName: args.vaultName ?? "",
+        reason: args.reason ?? "",
+        ...(secret.type === "code" ? { ephemeral: true } : {}),
+      };
+    }
+    case "connection":
+      return {
+        kind: "connection",
+        app: args.app ?? "",
+        ...(args.appName ? { appName: args.appName } : {}),
+        reason: args.reason ?? "",
+        ...(args.caps ? { caps: args.caps } : {}),
+      };
+  }
+}
+
+/** What a parked ask_poke call returns once its need is resolved. */
+function resumeText(kind: AskPokeArgs["kind"], raw: unknown): string {
+  const value = (raw ?? {}) as {
+    answer?: string;
+    expired?: boolean;
+    status?: string;
+    placeholder?: string;
+    account?: string;
+  };
+  if (value.expired) return "No answer came in time. Carry on without it, or report what's blocked.";
+  if (kind === "question") return `Answer: ${value.answer ?? ""}`;
+  if (kind === "secret") {
+    return value.status === "saved" && value.placeholder
+      ? `Saved to the vault. Use ${value.placeholder} where the secret goes; it's filled in when the tool runs, and you'll never see the value.`
+      : "It wasn't saved. Carry on without it, or report what's blocked.";
+  }
+  if (value.status === "connected")
+    return `Connected${value.account ? ` (${value.account})` : ""}. Its tools are available now.`;
+  return "Not connected: he said not now. Carry on without it, or report what's blocked.";
+}
+
+function needSummary(need: TaskNeed): string {
+  switch (need.kind) {
+    case "question":
+      return need.question;
+    case "secret":
+      return `${need.service} ${need.secret.label.toLowerCase()}`;
+    case "connection":
+      return `connecting ${need.appName ?? need.app}`;
+    case "approval":
+      return "an approval";
+  }
+}
+
+function humanKey(key: string): string {
+  const words = key.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/** The secret_request block for an agent's secret need. */
+function secretRequestProps(need: Extract<TaskNeed, { kind: "secret" }>): Record<string, unknown> {
+  const known = Object.entries(need.fields)
+    .filter(([, value]) => value.trim())
+    .slice(0, 5)
+    .map(([key, value]) => ({ label: humanKey(key).slice(0, 40), value: value.slice(0, 160) }));
+  return {
+    service: need.service,
+    title: need.secret.type === "password" ? `${need.service} login` : `${need.service} ${need.secret.label}`,
+    note: need.reason,
+    field: need.secret.label,
+    secretType: need.secret.type,
+    vaultName: need.vaultName,
+    ...(need.ephemeral ? { ephemeral: true } : {}),
+    known: [{ label: "Service", value: need.service }, ...known],
+    ...(Object.keys(need.fields).length ? { fields: need.fields } : {}),
+  };
+}
+
+/** The connect_request block for an agent's connection need. */
+function connectRequestProps(need: Extract<TaskNeed, { kind: "connection" }>): Record<string, unknown> {
+  const name = need.appName ?? need.app;
+  return {
+    kind: need.custom ? "custom" : "app",
+    app: need.app,
+    title: `Connect ${name}`,
+    note: need.reason,
+    ...(need.custom
+      ? {
+          source: `Set up by Poke from ${need.custom.source}${need.custom.toolCount ? ` · ${need.custom.toolCount} tools` : ""}`,
+        }
+      : {}),
+    ...(need.caps?.length ? { caps: need.caps.slice(0, 6) } : {}),
+  };
 }

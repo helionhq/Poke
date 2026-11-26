@@ -1,4 +1,4 @@
-import type { Block } from "../block.js";
+import type { Block, BlockActionRecord } from "../block.js";
 import type { CompactionRecord } from "../context.js";
 import type { Device, PairingCode } from "../device.js";
 import type { PersistedEvent, StoredEvent } from "../events.js";
@@ -62,6 +62,10 @@ export interface BlockRepository {
   get(id: string): Block | undefined;
   byMessage(messageId: string): Block[];
   pending(): Block[];
+  /** Blocks built from a task's needs. */
+  byTask(taskId: string): Block[];
+  recordAction(record: BlockActionRecord): void;
+  findAction(clientActionId: string): BlockActionRecord | undefined;
 }
 
 export interface TaskRepository {

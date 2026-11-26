@@ -6,6 +6,7 @@ import type { Services } from "../services.js";
 import { installErrorHandler } from "./errors.js";
 import type { AuthMode, RouteModule, Surface } from "./route.js";
 import { registerAgentRoutes } from "./routes/agents.js";
+import { registerBlockRoutes } from "./routes/blocks.js";
 import { registerAttachmentRoutes } from "./routes/attachments.js";
 import { registerCoreRoutes } from "./routes/core.js";
 import { registerEventsSocket } from "./routes/events.js";
@@ -62,6 +63,7 @@ export async function buildApp(
   registerThreadRoutes(app, services, surface);
   registerAttachmentRoutes(app, services, surface);
   registerAgentRoutes(app, services, surface);
+  registerBlockRoutes(app, services, surface);
   registerEventsSocket(app, services);
   for (const register of modules) register(app, services, surface);
   return app;

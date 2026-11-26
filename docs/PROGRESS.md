@@ -7,8 +7,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 1 | Scaffold: monorepo, tooling, boundaries, CI, contracts/domain skeletons, docs stubs | ✅ done |
 | 2 | Server core: SQLite + migrations, thread/messages/events with seq, WS resume, attachments, pairing, admin socket, minimal CLI | ✅ done |
 | 3 | Runtimes: Pi Durable executors, Claude Agent SDK, model registry, `poke login` / `poke model`, traces, compaction, side chats | ✅ done |
-| 4 | Blocks: catalog + `card`, state machines, actions API, agent tools, `ask_poke` parking | ⏳ next |
-| 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | |
+| 4 | Blocks: catalog + `card`, state machines, actions API, agent tools, `ask_poke` parking | ✅ done |
+| 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | ⏳ next |
 | 6 | Integrations: Executor bridge, Keenable, browse, local MCP | |
 | 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | |
 | 8 | Routines + skills + notifications | |
@@ -92,3 +92,31 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   the PreCompact hook's instructions reaching Claude Code's summary (decision 18), and a Qwen Token
   Plan turn.
 
+
+### Milestone 4 — blocks
+- `@poke/blocks`: the catalog from section 9.2 with props and slots that mirror the Doop components
+  (`choices`, `draft`, `action`, `secret_request`, `connect_request`, `tool_approval`,
+  `memory_note`) plus the composable `card` (13 safe primitives in a flat adjacency list, checked
+  for references, cycles, depth, size and button/input limits). Each kind has a version, states,
+  actions (who may send them, from which states, payload schema), fallback text and search text.
+  `applyAction` runs every transition.
+- `BlockService`: creates blocks under a message, runs actions one at a time per block and once per
+  `clientActionId` (migration 2 adds `block_actions`, which never stores a payload), writes secrets
+  straight to the vault, and tells the owner: a picked choice becomes the user's message, Poke gets
+  `<block_action>`, a parked agent is resumed. Task-owned blocks expire when their task ends.
+- Poke's tools `ask_choices`, `show_draft`, `propose_action`, `show_card`, `request_secret`,
+  `request_connection`. `remember` (and so `memory_note`) comes with memory in milestone 7.
+- `ask_poke` takes `question`, `secret` and `connection`. Secret and connection needs become blocks
+  the server attaches under Poke's one-line reply (or on their own if Poke can't reply); saving or
+  connecting resumes the agent, which gets the placeholder or the outcome.
+- API: `GET /v1/blocks/:id`, `POST /v1/blocks/:id/actions`. Thread search uses each kind's search
+  text; the digest shows blocks by their fallback.
+- `docs/BLOCKS.md`: the model, the lifecycle, and how to add a kind.
+- Waiting on later milestones: starting a sign-in for `connect` (Executor, 6), deciding
+  `tool_approval` blocks and running a draft's primary action through approvals (5), Undo for
+  `memory_note` (7), the card image proxy and the renderers (9). Until then those actions answer
+  "can't … yet" and leave the block as it was.
+- Tests: 102 in total, including the catalog (every state machine, card validation), a secret need
+  end to end (the value appears nowhere but the vault), expiry on cancel, needs with no Poke model,
+  choices, `<block_action>` for actions, drafts and cards, and the actions API over HTTP with a real
+  vault (idempotency, 400/404/409).

@@ -1,4 +1,4 @@
-import { type Message, messageText, type Repositories, type Task } from "@poke/domain";
+import { type Block, type Message, messageText, type Repositories, type Task } from "@poke/domain";
 
 export interface DigestOptions {
   userName: string;
@@ -15,7 +15,7 @@ export interface DigestOptions {
  * still open. The thread itself stays whole in poke.db; search_thread reaches the rest.
  */
 export function buildDigest(
-  repos: Pick<Repositories, "messages" | "compactions" | "tasks">,
+  repos: Pick<Repositories, "messages" | "compactions" | "tasks" | "blocks">,
   options: DigestOptions,
 ): string | undefined {
   const maxChars = options.maxChars ?? 60_000;
@@ -37,7 +37,7 @@ export function buildDigest(
   const lines: string[] = [];
   let used = 0;
   for (const message of [...recent].reverse()) {
-    const line = messageLine(message, options);
+    const line = messageLine(message, options, (id) => repos.blocks.get(id));
     if (!line) continue;
     if (used + line.length > budget) break;
     lines.unshift(line);
@@ -63,8 +63,26 @@ function taskLine(task: Task): string {
   return `- ${task.name} (${task.id}, ${task.status}): ${task.goal}${need}`;
 }
 
-function messageLine(message: Message, options: DigestOptions): string | undefined {
-  const text = messageText(message).trim();
+const BLOCK_CHARS = 400;
+
+/** A block as one line: its kind, where it stands, and its plain-text fallback. */
+function blockLine(block: Block): string {
+  const fallback = (block.fallback ?? "").replace(/\s+/g, " ").trim();
+  const short = fallback.length > BLOCK_CHARS ? `${fallback.slice(0, BLOCK_CHARS - 1)}…` : fallback;
+  return `[${block.kind}, ${block.state}${short ? `: ${short}` : ""}]`;
+}
+
+function messageLine(
+  message: Message,
+  options: DigestOptions,
+  blockById: (id: string) => Block | undefined,
+): string | undefined {
+  const blocks = message.parts.flatMap((p) => {
+    if (p.type !== "block") return [];
+    const block = blockById(p.blockId);
+    return block ? [blockLine(block)] : [];
+  });
+  const text = [messageText(message).trim(), ...blocks].filter(Boolean).join(" ");
   const attachments = message.parts.filter((p) => p.type === "attachment").length;
   if (!text && attachments === 0) return undefined;
   const who = message.role === "user" ? options.userName : message.role === "poke" ? "Poke" : "System";

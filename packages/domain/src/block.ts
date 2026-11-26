@@ -13,6 +13,8 @@ export interface Block {
   state: string;
   /** What the user decided (never contains secret values). */
   resolution?: Record<string, unknown>;
+  /** Plain text for notifications, the digest and clients that don't know this kind or version. */
+  fallback?: string;
   owner: BlockOwner;
   messageId: MessageId;
   scope: "main" | `sidechat:${string}`;
@@ -27,3 +29,13 @@ export type BlockOwner =
   | { type: "task"; taskId: TaskId; needId: string }
   /** An Executor-gated tool call waiting for a decision (any agent). */
   | { type: "approval"; approvalId: string };
+
+/** A block action already applied, so a retried request (same clientActionId) gets the same answer. */
+export interface BlockActionRecord {
+  clientActionId: string;
+  blockId: string;
+  action: string;
+  /** What the action answered (e.g. a sign-in URL). Never a payload, which may hold a secret. */
+  result?: Record<string, unknown>;
+  createdAt: number;
+}

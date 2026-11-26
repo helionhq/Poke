@@ -28,8 +28,19 @@ export {
   recordUsage,
   type AgentOutcome,
   type AgentsDeps,
+  type NeedInput,
   type QuestionNeed,
 } from "./agents.js";
 export { buildDigest, type DigestOptions } from "./digest.js";
 export { InteractionOrchestrator, type InteractionDeps } from "./interaction.js";
 export { SideChatService, type SideChatDeps, type SideChatView } from "./sidechats.js";
+export {
+  BlockService,
+  secretPlaceholder,
+  type ApprovalDecider,
+  type BlockActionInput,
+  type BlockActionNotice,
+  type BlockActionResult,
+  type BlocksDeps,
+  type ConnectionStarter,
+} from "./blocks.js";

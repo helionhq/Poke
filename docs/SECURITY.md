@@ -55,3 +55,21 @@ credentials and entry secret fields), refreshed when the vault changes. Each val
 as base64, base64url, URL-encoded and JSON-escaped text, longest first. Compaction summaries are
 redacted before they are stored.
 
+
+## Blocks (milestone 4)
+
+- A value typed into a `secret_request` goes from the app to `POST /v1/blocks/:id/actions` and
+  straight into the vault. It is never stored in a block, a message, the event log or the action
+  log (which keeps the result, never the payload), never logged (request bodies aren't), and never
+  echoed: an invalid secret payload only says "That value can't be saved". The agent gets
+  `{status: "saved", vaultName, placeholder}`. Once saved, the value joins the redaction set.
+- One-time codes are saved as ephemeral vault entries that expire after 10 minutes.
+- Authority is server-side. The app sends an action name and a payload; the server checks the kind,
+  that a user may send that action (`expire`, `connected` and `failed` are server-only), the current
+  state, and the payload schema. A card press can only name a button the stored card has, and only
+  its own field keys are passed on.
+- Cards are data, not code: a fixed set of primitives, https images only (to be loaded through the
+  server by the image proxy that comes with the app in milestone 9, with private addresses refused),
+  logos by app id or domain, links opened only on a tap, with limits on size and depth.
+- Actions are idempotent per `clientActionId` and serialised per block, so a retried or doubled tap
+  can't save, book or approve twice.

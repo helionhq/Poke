@@ -70,6 +70,7 @@ export const Block = z.object({
   props: z.record(z.string(), z.unknown()),
   state: z.string(),
   resolution: z.record(z.string(), z.unknown()).optional(),
+  fallback: z.string().optional(),
   owner: BlockOwner,
   messageId: z.string(),
   scope: Scope,

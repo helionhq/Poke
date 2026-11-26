@@ -24,12 +24,17 @@ import type { SettingsService } from "./settings.js";
 import type { ToolGateway } from "./tools/gateway.js";
 
 export type QuestionNeed = Extract<TaskNeed, { kind: "question" }>;
+/** A need as an executor raises it; the id comes from the tool call. */
+export type NeedInput =
+  | Omit<Extract<TaskNeed, { kind: "question" }>, "id">
+  | Omit<Extract<TaskNeed, { kind: "secret" }>, "id">
+  | Omit<Extract<TaskNeed, { kind: "connection" }>, "id">;
 
 /** What Poke hears about its agents. Cancellations it asked for aren't reported back. */
 export type AgentOutcome =
   | { kind: "report"; task: Task; text: string }
   | { kind: "failed"; task: Task; error: string }
-  | { kind: "question"; task: Task; need: QuestionNeed };
+  | { kind: "need"; task: Task; need: TaskNeed };
 
 export interface AgentsDeps {
   repos: Repositories;
@@ -220,27 +225,34 @@ export class AgentsService {
     }
   }
 
-  /** ask_poke (question): park the task; Poke answers by messaging the agent. */
-  ask(
-    taskId: string,
-    question: { question: string; options?: string[]; reason?: string },
-    needId: string,
-  ): QuestionNeed {
+  /**
+   * ask_poke: park the task on a need. Poke hears about it; a question is answered by messaging
+   * the agent, a secret or connection by the block the server shows (resolveNeed).
+   */
+  ask(taskId: string, input: NeedInput, needId: string): TaskNeed {
     const task = this.#require(taskId);
-    const need: QuestionNeed = {
-      id: needId,
-      kind: "question",
-      question: question.question,
-      ...(question.options ? { options: question.options } : {}),
-      ...(question.reason ? { reason: question.reason } : {}),
-    };
-    if (task.need?.id === needId) return task.need as QuestionNeed; // a replayed call
+    if (task.need?.id === needId) return task.need; // a replayed call
+    const need = { ...input, id: needId } as TaskNeed;
     task.status = "waiting";
     task.need = need;
     task.updatedAt = this.deps.clock.now();
     this.#save(task, [{ type: "task.updated", task }]);
-    this.#notify({ kind: "question", task, need });
+    this.#notify({ kind: "need", task, need });
     return need;
+  }
+
+  /** A block resolved a task's need: wake the parked tool with the value. */
+  async resolveNeed(taskId: string, needId: string, value: unknown): Promise<void> {
+    const task = this.deps.repos.tasks.get(taskId);
+    if (!task || task.need?.id !== needId || !ACTIVE.has(task.status)) {
+      throw new DomainError("unavailable", "That agent isn't waiting for this any more");
+    }
+    const result = await this.deps.runtime.resolveNeed(task.id, needId, value);
+    if (result === "not_found") throw new DomainError("unavailable", `${task.name} isn't waiting any more`);
+    task.status = "running";
+    delete task.need;
+    task.updatedAt = this.deps.clock.now();
+    this.#save(task, [{ type: "task.updated", task }]);
   }
 
   async answer(task: Task, text: string, link?: { traceId: string }): Promise<void> {

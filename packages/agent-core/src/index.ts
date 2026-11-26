@@ -24,5 +24,14 @@ export {
   SILENT_TOOLS,
   wait,
 } from "./tools/core.js";
+export {
+  askChoices,
+  BLOCK_TOOLS,
+  proposeAction,
+  requestConnection,
+  requestSecret,
+  showCard,
+  showDraft,
+} from "./tools/blocks.js";
 export { toolLabel, type ToolLabel } from "./tools/labels.js";
 export { AsyncQueue } from "./queue.js";

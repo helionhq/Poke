@@ -279,6 +279,19 @@ export const MIGRATIONS: string[] = [
     updated_at INTEGER NOT NULL
   );
   `,
+  /* 2: blocks (milestone 4) */ `
+  ALTER TABLE blocks ADD COLUMN fallback TEXT;
+  ALTER TABLE blocks ADD COLUMN task_id TEXT;
+  CREATE INDEX blocks_task ON blocks(task_id);
+  CREATE TABLE block_actions (
+    client_action_id TEXT PRIMARY KEY,
+    block_id TEXT NOT NULL,
+    action TEXT NOT NULL,
+    result TEXT,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX block_actions_block ON block_actions(block_id);
+  `,
 ];
 
 export function migrate(db: SqliteDb): { from: number; to: number } {

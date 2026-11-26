@@ -15,6 +15,7 @@ import {
   messageText,
   stripLightMarkdown,
 } from "@poke/domain";
+import { searchText as blockSearchText } from "@poke/blocks";
 import type { EventHub } from "./core/hub.js";
 
 export interface IncomingUserMessage {
@@ -168,16 +169,15 @@ export class ThreadService {
     return { messageCount: this.repos.messages.count(), ...(first ? { since: first.createdAt } : {}) };
   }
 
-  /** Draft bodies etc. are indexed with their message so Search finds them. */
+  /** Block text (draft bodies, card contents, titles) is indexed with its message so Search finds it. */
   #extraSearchText(message: Message): string | undefined {
     const texts: string[] = [];
     for (const part of message.parts) {
       if (part.type !== "block") continue;
       const block = this.repos.blocks.get(part.blockId);
       if (!block) continue;
-      const props = block.props as { body?: unknown; subject?: unknown; title?: unknown };
-      for (const value of [props.subject, props.title, props.body])
-        if (typeof value === "string") texts.push(value);
+      const text = blockSearchText(block).trim();
+      if (text) texts.push(text);
     }
     return texts.length > 0 ? texts.join("\n") : undefined;
   }

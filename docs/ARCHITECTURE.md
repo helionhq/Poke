@@ -171,3 +171,35 @@ redact after). Vault placeholders are resolved in `prepare` from milestone 5.
 | `POST /v1/sidechats/:id/messages`, `/cancel`, `/send-to-poke` | device | send (reply streams), stop, summary to the thread |
 | `GET /admin/logins`, `POST/DELETE /admin/logins/:id` | admin | validate and save / remove a credential |
 | `GET /admin/models`, `GET /admin/models/providers/:provider`, `PUT/DELETE /admin/models/:role` | admin | roles with allowed providers, a provider's models, set / unset |
+
+## Blocks (milestone 4)
+
+The full model is in [BLOCKS.md](BLOCKS.md). In short:
+
+```
+Poke's block tools ───────────────┐
+ask_poke (secret / connection) ───┼─ BlockService.attach ─ blocks table ─ block.created
+                                  │
+POST /v1/blocks/:id/actions ──────┴─ BlockService.act ─ @poke/blocks state machine
+                                       ├─ side effect (vault write / sign-in / approval)
+                                       ├─ blocks + block_actions tables ─ block.updated
+                                       └─ owner: user message (choices) │ <block_action> to Poke │
+                                                 resolveNeed → parked ask_poke resumes
+```
+
+- `packages/blocks` is pure (zod only): each kind's props, states, actions, fallback and search
+  text, and `applyAction`, which every transition goes through.
+- `BlockService` (application) runs actions one at a time per block and once per
+  `clientActionId`, writes secrets straight to the vault, and tells whoever is waiting.
+- `InteractionOrchestrator` registers Poke's block tools (each attaches to the reply being written),
+  turns agents' needs into inputs that carry the block to attach once Poke has replied, and queues
+  `<block_action>` inputs.
+- Thread search indexes each block's search text with its message; the digest shows blocks as
+  `[kind, state: fallback]`.
+
+### API (milestone 4 additions)
+
+| Route | Auth | What |
+|---|---|---|
+| `GET /v1/blocks/:id` | device | one block |
+| `POST /v1/blocks/:id/actions` | device | act on a block: `{action, payload?, clientActionId}` → `{block, result?, duplicate}` |

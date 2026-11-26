@@ -6,6 +6,7 @@ import type {
   AttachmentRepository,
   Block,
   BlockRepository,
+  BlockActionRecord,
   CompactionRecord,
   CompactionRepository,
   Device,
@@ -263,6 +264,7 @@ function blockFromRow(row: Row): Block {
     updatedAt: Number(row.updated_at),
   };
   setOpt(block, "resolution", optJson(row.resolution));
+  if (row.fallback !== null && row.fallback !== undefined) block.fallback = String(row.fallback);
   return block;
 }
 
@@ -270,10 +272,11 @@ export class SqliteBlocks implements BlockRepository {
   constructor(private readonly db: SqliteDb) {}
   save(block: Block): void {
     this.db.run(
-      `INSERT INTO blocks (id, kind, v, props, state, resolution, owner, message_id, scope, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO blocks (id, kind, v, props, state, resolution, owner, message_id, scope, created_at, updated_at, fallback, task_id)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET props = excluded.props, state = excluded.state, resolution = excluded.resolution,
-         owner = excluded.owner, message_id = excluded.message_id, updated_at = excluded.updated_at`,
+         owner = excluded.owner, message_id = excluded.message_id, updated_at = excluded.updated_at,
+         fallback = excluded.fallback, task_id = excluded.task_id`,
       block.id,
       block.kind,
       block.v,
@@ -285,6 +288,8 @@ export class SqliteBlocks implements BlockRepository {
       block.scope,
       block.createdAt,
       block.updatedAt,
+      block.fallback ?? null,
+      block.owner.type === "task" ? block.owner.taskId : null,
     );
   }
   get(id: string): Block | undefined {
@@ -302,6 +307,33 @@ export class SqliteBlocks implements BlockRepository {
         "SELECT * FROM blocks WHERE state IN ('pending', 'editing', 'connecting', 'filled') ORDER BY created_at",
       )
       .map(blockFromRow);
+  }
+  byTask(taskId: string): Block[] {
+    return this.db
+      .all("SELECT * FROM blocks WHERE task_id = ? ORDER BY created_at", taskId)
+      .map(blockFromRow);
+  }
+  recordAction(record: BlockActionRecord): void {
+    this.db.run(
+      "INSERT OR IGNORE INTO block_actions (client_action_id, block_id, action, result, created_at) VALUES (?, ?, ?, ?, ?)",
+      record.clientActionId,
+      record.blockId,
+      record.action,
+      record.result ? json(record.result) : null,
+      record.createdAt,
+    );
+  }
+  findAction(clientActionId: string): BlockActionRecord | undefined {
+    const row = this.db.get("SELECT * FROM block_actions WHERE client_action_id = ?", clientActionId);
+    if (!row) return undefined;
+    const record: BlockActionRecord = {
+      clientActionId: String(row.client_action_id),
+      blockId: String(row.block_id),
+      action: String(row.action),
+      createdAt: Number(row.created_at),
+    };
+    setOpt(record, "result", optJson(row.result));
+    return record;
   }
 }
 
