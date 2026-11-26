@@ -1,14 +1,20 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { ExecutorClient } from "@poke/integrations-executor";
+import { SdkMcpConnector } from "@poke/mcp-bridge";
+import { FAKE_MCP_SERVER } from "@poke/mcp-bridge/testing";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   AgentsService,
   ApprovalService,
   BlockService,
+  type ConnectionStarter,
+  IntegrationService,
   InteractionOrchestrator,
   LoginService,
   ModelService,
   SecretRedactor,
+  SecretResolver,
   SideChatService,
   text,
   ToolGateway,
@@ -19,6 +25,7 @@ import {
   type CompactionInfo,
   type ConversationRuntime,
   type ConversationSession,
+  DomainError,
   type ExecutorEvent,
   type ExecutorRuntime,
   type ExecutorSpec,
@@ -164,10 +171,19 @@ class FakeTimers implements Timers {
 }
 
 /** Just enough vault for blocks: entries with their secret values kept apart. */
-class MemoryVault implements Pick<VaultPort, "get" | "put" | "update"> {
+class MemoryVault implements Pick<VaultPort, "get" | "put" | "update" | "list" | "resolve" | "markUsed"> {
   entries = new Map<string, VaultEntry>();
   values = new Map<string, Record<string, string>>();
   get = (name: string) => this.entries.get(name);
+  list = () => [...this.entries.values()];
+  resolve = (name: string, field?: string) => {
+    const values = this.values.get(name);
+    return values ? (field ? values[field] : Object.values(values)[0]) : undefined;
+  };
+  markUsed = (name: string, by?: string) => {
+    const entry = this.entries.get(name);
+    if (entry && by && !entry.usedBy.includes(by)) entry.usedBy.push(by);
+  };
   put = (input: VaultPutInput): VaultEntry => {
     const entry: VaultEntry = {
       name: input.name as VaultEntry["name"],
@@ -274,6 +290,8 @@ let approvals: ApprovalService;
 let vault: MemoryVault;
 let secrets: MemorySecrets;
 let live: Array<{ type: string } & Record<string, unknown>>;
+/** Integration tests plug their IntegrationService in here. */
+let connectStarter: ConnectionStarter["start"];
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "poke-agents-"));
@@ -325,8 +343,11 @@ beforeEach(() => {
     vault,
     agents,
     approvals,
+    connections: { start: (input) => connectStarter(input) },
   });
   blocks.start();
+  connectStarter = () =>
+    Promise.reject(new DomainError("unavailable", "Apps can't be connected from here yet"));
   const caps = (idleCompaction: RuntimeCapabilities["idleCompaction"]): RuntimeCapabilities => ({
     steering: true,
     idleCompaction,
@@ -991,7 +1012,7 @@ describe("approvals", () => {
       state: "pending",
       owner: { type: "approval", taskId: agentId },
       props: {
-        app: "northwind",
+        app: "Northwind",
         tool: "refund_order",
         action: "Refund $84.00 to Maya Chen",
         always: "Always allow refunds under $100",
@@ -1095,6 +1116,219 @@ describe("approvals", () => {
     );
     await until(() => blocks.get(second.id).state === "expired");
     expect(kernel.db.approvals.get(approvalId)).toMatchObject({ status: "expired" });
+  });
+
+  describe("integrations", () => {
+    const fakeServer = (env: Record<string, string> = {}) => ({
+      kind: "stdio" as const,
+      command: process.execPath,
+      args: [FAKE_MCP_SERVER],
+      env,
+    });
+    const searches: string[] = [];
+    function integrations() {
+      const connector = new SdkMcpConnector();
+      const service = new IntegrationService({
+        repos: kernel.db,
+        clock: { now: () => now },
+        timers,
+        log: silentLogger,
+        gateway,
+        approvals,
+        executor: new ExecutorClient({
+          connector,
+          token: () => undefined,
+          org: () => undefined,
+          log: silentLogger,
+          transport: fakeServer({ FAKE_MODE: "executor" }),
+        }),
+        search: {
+          search: async ({ query }) => {
+            searches.push(query);
+            return { text: `[1] Result for ${query} (https://example.com)`, results: [] };
+          },
+          fetch: async ({ urls }) => ({ text: urls.join("\n"), pages: [] }),
+        },
+        vault: vault as unknown as VaultPort,
+        mcp: connector,
+        resolver: new SecretResolver(vault as unknown as VaultPort),
+      });
+      service.attachBlocks(blocks);
+      connectStarter = (input) => service.start(input);
+      return service;
+    }
+    const textOf = (result: { output: Array<{ type: string; text?: string }> }) =>
+      result.output.map((o) => o.text ?? "").join("");
+
+    it("runs Executor calls, parks a gated one on an OK, and resumes Executor with the answer", async () => {
+      const service = integrations();
+      try {
+        const agentId = await startAgent();
+        const invoker = gateway.invoker("executor");
+        const plain = await invoker.invoke(
+          "executor_call",
+          { calls: { path: "tools.github.issues.list", input: { repo: "poke" } } },
+          ctxFor(agentId, "e0"),
+        );
+        expect(textOf(plain)).toContain("echoed");
+
+        claude.script = () => reply("Stripe wants your OK for Maya's refund.");
+        const call = {
+          calls: { path: "tools.stripe.refunds.create", input: { amount: 8400, charge: "ch_1" } },
+          intent: "Refund $84.00 to Maya Chen",
+        };
+        const parked = await invoker.invoke("executor_call", call, ctxFor(agentId, "e1"));
+        expect(parked.park?.needId).toBeDefined();
+        const block = await until(() => kernel.db.blocks.byTask(agentId)[0]);
+        await idle();
+        expect(block).toMatchObject({
+          kind: "tool_approval",
+          props: {
+            app: "Stripe",
+            tool: "refunds.create",
+            action: "Refund $84.00 to Maya Chen",
+            always: "Always allow refunds.create in Stripe",
+          },
+        });
+        expect(kernel.db.approvals.get((block.owner as { approvalId: string }).approvalId)).toMatchObject({
+          integration: "stripe",
+          resume: { executionId: "apr_11111111-1111-1111-1111-111111111111" },
+        });
+
+        await blocks.act(block.id, { action: "allow", payload: {}, clientActionId: "allow-ex01" });
+        const need = executors.needs.at(-1)!;
+        expect(need.needId).toBe(parked.park!.needId);
+        // Pi wakes the parked call with the decision; the bridge accepts on Executor's side.
+        const resumed = await invoker.invoke("executor_call", call, {
+          ...ctxFor(agentId, "e1"),
+          resume: { needId: need.needId, value: need.value },
+        });
+        expect(textOf(resumed)).toContain("refunded");
+
+        // The model can't answer an approval itself.
+        const sneaky = await invoker.invoke(
+          "executor_resume",
+          { requestId: "apr_11111111-1111-1111-1111-111111111111", action: "accept" },
+          ctxFor(agentId, "e2"),
+        );
+        expect(sneaky.isError).toBe(true);
+      } finally {
+        await service.close();
+      }
+    });
+
+    it("signs in to an app from a connect block and marks it connected", async () => {
+      const service = integrations();
+      try {
+        await setPoke();
+        say("connect gmail");
+        await until(() => pokeMessages().length > 0);
+        await idle();
+        const message = pokeMessages().at(-1)!;
+        const block = blocks.attach(message, {
+          kind: "connect_request",
+          props: { kind: "app", app: "gmail", title: "Connect Gmail", note: "To read the refund thread." },
+          owner: { type: "poke" },
+        });
+        const started = await blocks.act(block.id, {
+          action: "connect",
+          payload: {},
+          clientActionId: "connect-0001",
+        });
+        expect(started.result).toEqual({ url: "https://executor.sh/connect/abc" });
+        expect(blocks.get(block.id).state).toBe("connecting");
+        timers.fire();
+        await until(() => blocks.get(block.id).state === "connected");
+        expect(blocks.get(block.id).resolution).toMatchObject({ account: "maya@northwind.co" });
+        expect(kernel.db.integrations.get("gmail")).toMatchObject({
+          source: "executor",
+          accounts: [{ id: "con_1", identity: "maya@northwind.co", status: "connected" }],
+        });
+      } finally {
+        await service.close();
+      }
+    });
+
+    it("adds a local MCP server with a vault placeholder, defers its tools, and removes them", async () => {
+      const service = integrations();
+      try {
+        vault.put({ name: "fake", kind: "api_key", secrets: { token: "t0k-secret" } });
+        const server = await service.addMcpServer({
+          id: "fake",
+          transport: fakeServer({ FAKE_TOKEN: "{{vault:fake.token}}" }),
+        });
+        expect(server).toMatchObject({ connected: true, toolCount: 2 });
+        // Stored with the placeholder, never the value.
+        expect(JSON.stringify(kernel.db.integrations.mcpServers())).not.toContain("t0k-secret");
+        const spec = gateway.specs("executor").find((s) => s.name === "mcp__fake__echo");
+        expect(spec).toMatchObject({ loading: "deferred", callers: ["model"], replay: "safe" });
+        expect(gateway.specs("poke").some((s) => s.name === "mcp__fake__echo")).toBe(false);
+        const out = await gateway.invoke(
+          "executor",
+          "mcp__fake__echo",
+          { text: "hi" },
+          ctxFor("tsk_1", "m1"),
+        );
+        expect(textOf(out)).toBe("echo: hi t0k-secret");
+        expect(vault.get("fake")!.usedBy).toEqual(["mcp:fake"]);
+
+        await service.removeMcpServer("fake");
+        expect(gateway.has("mcp__fake__echo")).toBe(false);
+      } finally {
+        await service.close();
+      }
+    });
+
+    it("lets an edited draft through once, only with the edited text, for the same agent and tool", async () => {
+      runs.length = 0;
+      registerGated("gmail_send_again", (args) => ({
+        integration: "gmail",
+        tool: "messages.send",
+        title: `Send the email to ${String(args.to)}`,
+      }));
+      const agentId = await startAgent();
+      claude.script = () => reply("Needs your OK.");
+      const invoker = gateway.invoker("executor");
+      approvals.allowEdited(agentId, "gmail", "messages.send", ["Hi Maya,\nyour refund is on its way."]);
+      const other = await invoker.invoke(
+        "gmail_send_again",
+        { to: "maya@northwind.co", body: "Something else" },
+        ctxFor(agentId, "d1"),
+      );
+      expect(other.park).toBeDefined();
+      const edited = { to: "maya@northwind.co", body: "Hi Maya,\nyour refund is on its way." };
+      const sent = await invoker.invoke("gmail_send_again", edited, ctxFor(agentId, "d2"));
+      expect(sent.park).toBeUndefined();
+      expect(runs.at(-1)).toMatchObject({ allowed: true });
+      const twice = await invoker.invoke("gmail_send_again", edited, ctxFor(agentId, "d3"));
+      expect(twice.park).toBeDefined();
+      await idle();
+    });
+
+    it("gives every agent the web tools and lists the vault without values", async () => {
+      const service = integrations();
+      try {
+        vault.put({
+          name: "resy.login",
+          kind: "login",
+          fields: { email: "a@b.co" },
+          secrets: { password: "pw" },
+        });
+        const listed = await gateway.invoke("executor", "vault_list", {}, ctxFor("tsk_1", "v1"));
+        expect(textOf(listed)).toContain("{{vault:resy.login.password}}");
+        expect(textOf(listed)).not.toContain('"pw"');
+        const found = await gateway.invoke(
+          "poke",
+          "search_web",
+          { query: "lisbon stays" },
+          { agent: { kind: "poke" }, callId: "w1", signal: signal() },
+        );
+        expect(textOf(found)).toContain("Result for lisbon stays");
+        expect(searches).toEqual(["lisbon stays"]);
+      } finally {
+        await service.close();
+      }
+    });
   });
 });
 

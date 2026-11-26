@@ -5,6 +5,8 @@ import {
   AgentsService,
   ApprovalService,
   BlockService,
+  IntegrationService,
+  integrationsSummary,
   InteractionOrchestrator,
   LoginService,
   type LoginValidator,
@@ -15,7 +17,19 @@ import {
   SideChatService,
   ToolGateway,
 } from "@poke/application";
-import { type ConversationRuntime, type ModelCatalog, type ProviderKind } from "@poke/domain";
+import { browseServer, parseBrowseStatus } from "@poke/browse";
+import {
+  type ConversationRuntime,
+  type ExecutorPort,
+  type McpConnector,
+  type McpServerConfig,
+  type ModelCatalog,
+  type ProviderKind,
+  type SearchPort,
+} from "@poke/domain";
+import { ExecutorClient } from "@poke/integrations-executor";
+import { SdkMcpConnector } from "@poke/mcp-bridge";
+import { KeenableSearch } from "@poke/search-keenable";
 import {
   CLAUDE_PROVIDER,
   ClaudeConversationRuntime,
@@ -132,6 +146,8 @@ export interface AgentStack extends ModelStack {
   agents: AgentsService;
   blocks: BlockService;
   approvals: ApprovalService;
+  integrations: IntegrationService;
+  executor: ExecutorPort;
   poke: InteractionOrchestrator;
   sidechats: SideChatService;
   persona(): PersonaSlots;
@@ -144,16 +160,38 @@ export interface AgentStackOptions extends ModelStackOptions {
   claudeExecutable?: string;
   /** Override runtimes (tests). */
   runtimes?: Partial<Record<ProviderKind, ConversationRuntime>>;
+  /** Tests: fake integrations. */
+  search?: SearchPort;
+  mcpConnector?: McpConnector;
+  executorTransport?: McpServerConfig["transport"];
+  /** false: don't start browse (tests, or no browse installed). */
+  browse?: false | McpServerConfig["transport"];
 }
 
 export async function openAgentStack(kernel: Kernel, options: AgentStackOptions = {}): Promise<AgentStack> {
   const stack = await openModelStack(kernel, { claudeLive: true, ...options });
   const { paths, settings, log } = kernel;
   const redactor = new SecretRedactor(stack.secrets);
-  const gateway = new ToolGateway(redactor, log, new SecretResolver(stack.vault));
+  const resolver = new SecretResolver(stack.vault);
+  const gateway = new ToolGateway(redactor, log, resolver);
+  const mcp = options.mcpConnector ?? new SdkMcpConnector();
+  const executor = new ExecutorClient({
+    connector: mcp,
+    token: () => stack.vault.system.get("executor.token"),
+    org: () => settings.get("executor.org"),
+    log,
+    ...(options.executorTransport ? { transport: options.executorTransport } : {}),
+  });
+  const search =
+    options.search ?? new KeenableSearch({ apiKey: () => stack.vault.system.get("keenable.key") });
   const persona = (): PersonaSlots => {
     const homeCity = settings.get("profile.homeCity");
+    const integrations = integrationsSummary(
+      kernel.db.integrations.list(),
+      kernel.db.integrations.mcpServers(),
+    );
     return {
+      ...(integrations ? { integrations } : {}),
       userName: settings.userName(),
       timezone: settings.timezone(),
       ...(homeCity ? { homeCity } : {}),
@@ -199,6 +237,22 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     agents,
     redact: (value) => redactor.redactValue(value),
   });
+  const integrations = new IntegrationService({
+    repos: kernel.db,
+    clock: kernel.clock,
+    timers: kernel.timers,
+    log,
+    gateway,
+    approvals,
+    executor,
+    search,
+    vault: stack.vault,
+    mcp,
+    resolver,
+    ...(options.browse === false
+      ? {}
+      : { browse: { transport: options.browse ?? browseServer(), parseStatus: parseBrowseStatus } }),
+  });
   const blocks = new BlockService({
     repos: kernel.db,
     hub: kernel.hub,
@@ -209,7 +263,9 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     vault: stack.vault,
     agents,
     approvals,
+    connections: integrations,
   });
+  integrations.attachBlocks(blocks);
   const poke = new InteractionOrchestrator({
     repos: kernel.db,
     hub: kernel.hub,
@@ -260,6 +316,8 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
   // Tools first, then executors pick up where they left off before the restart.
   blocks.start();
   approvals.start();
+  // MCP servers and browse connect in the background; their tools reach agents started after.
+  void integrations.connectAll().catch((error: unknown) => log.warn({ err: error }, "integrations"));
   poke.start();
   await agents.resume().catch((error: unknown) => log.error({ err: error }, "couldn't resume agents"));
   return {
@@ -269,6 +327,8 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     agents,
     blocks,
     approvals,
+    integrations,
+    executor,
     poke,
     sidechats,
     persona,
@@ -276,6 +336,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
       sweeper?.cancel();
       await sidechats.closeAll();
       await poke.close();
+      await integrations.close();
       await host.close();
       stack.close();
     },

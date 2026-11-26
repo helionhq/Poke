@@ -35,3 +35,16 @@ export {
 } from "./tools/blocks.js";
 export { toolLabel, type ToolLabel } from "./tools/labels.js";
 export { AsyncQueue } from "./queue.js";
+export {
+  addMcpServer,
+  executorCall,
+  executorDescribe,
+  executorExecute,
+  executorResume,
+  executorSearch,
+  executorSkills,
+  fetchPages,
+  INTEGRATION_TOOLS,
+  searchWeb,
+  vaultList,
+} from "./tools/integrations.js";

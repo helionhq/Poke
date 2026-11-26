@@ -57,6 +57,7 @@ program
   .argument("[rest...]")
   .option("--list", "list everything")
   .option("--unset", "remove the value")
+  .option("--stdin", "read a service key from stdin instead of prompting")
   .option("--json", "machine-readable output")
   .action(
     wrap(
@@ -64,7 +65,7 @@ program
         key: string | undefined,
         value: string | undefined,
         rest: string[],
-        opts: { list?: boolean; unset?: boolean; json?: boolean },
+        opts: { list?: boolean; unset?: boolean; json?: boolean; stdin?: boolean },
       ) => configCommand(ctx, key, value, rest, opts),
     ),
   );

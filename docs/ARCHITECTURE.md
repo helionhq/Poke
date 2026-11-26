@@ -234,3 +234,32 @@ approval need → Poke's reply + draft / action / tool_approval block → BlockS
 | `POST /v1/vault/entries/:name/reveal` | device + proof | the entry's secret values |
 | `GET /v1/approvals` | device | approvals waiting for an OK |
 | `GET /v1/approvals/rules`, `DELETE /v1/approvals/rules/:id` | device | always-allow rules |
+
+## Integrations (milestone 6)
+
+```
+executor_call / executor_execute ─ IntegrationService ─ ExecutorClient ─ MCP (model mode) ─ Executor Cloud
+        │ approval-required                                    ▲
+        └─ ApprovalService.gate ─ park ─ block ─ decide ─ resume ┘ accept / decline
+connect_request "connect" ─ IntegrationService.start ─ userConnect ─ poll ─ block connected
+mcp__<server>__* ─ SdkMcpConnector (stdio / HTTP)     browse_* ─ browse mcp (stdio) ─ relay ─ Chrome
+search_web / fetch_pages ─ KeenableSearch
+```
+
+- Ports (domain): `McpConnector`/`McpSession`, `ExecutorPort` (run, resume, connect, connection,
+  catalog), `SearchPort`.
+- Adapters: `mcp-bridge` (MCP SDK client), `integrations-executor` (Executor protocol, catalog),
+  `search-keenable`, `browse` (the `browse mcp` transport and its status reader).
+- `IntegrationService` (application) registers the tools, settles Executor answers, runs sign-ins
+  (it is BlockService's `ConnectionStarter`), connects local MCP servers and browse in the
+  background at boot, and reconnects a dropped server after 30 s.
+- Poke's prompt lists connected apps and MCP servers ("Connected apps").
+
+### API (milestone 6 additions)
+
+| Route | Auth | What |
+|---|---|---|
+| `GET /v1/integrations` | device | connected apps and whether Executor is set up |
+| `GET /v1/integrations/catalog` | device | Executor's app catalog (cached an hour) |
+| `GET /v1/integrations/mcp`, `POST /v1/integrations/mcp`, `DELETE /v1/integrations/mcp/:id` | device | local MCP servers |
+| `GET /admin/keys`, `PUT/DELETE /admin/keys/:key` | admin socket | service keys (set or not; values never returned) |

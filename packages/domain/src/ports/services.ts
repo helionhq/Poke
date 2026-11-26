@@ -1,4 +1,6 @@
 import type { VaultEntry, VaultKind, SystemSecretKey } from "../vault.js";
+import type { McpServerConfig } from "../integration.js";
+import type { JsonSchema, ToolOutputItem } from "./runtime.js";
 
 export interface MemoryPort {
   /** False when the Memory models aren't set or Honcho isn't deployed. */
@@ -165,4 +167,98 @@ export interface CryptoPort {
   sha256Hex(data: string | Uint8Array): string;
   /** Constant-time string comparison. */
   safeEqual(a: string, b: string): boolean;
+}
+
+// ── MCP (local servers, browse, Executor) ────────────────────────────────────────────────────
+
+export interface McpToolInfo {
+  name: string;
+  title?: string;
+  description?: string;
+  inputSchema: JsonSchema;
+  annotations?: { readOnlyHint?: boolean; destructiveHint?: boolean; idempotentHint?: boolean };
+}
+
+export interface McpCallResult {
+  output: ToolOutputItem[];
+  /** The server's structuredContent, when it sent one. */
+  structured?: unknown;
+  isError: boolean;
+}
+
+/** One live connection to an MCP server. */
+export interface McpSession {
+  tools(): Promise<McpToolInfo[]>;
+  call(
+    name: string,
+    args: Record<string, unknown>,
+    opts?: { signal?: AbortSignal; timeoutMs?: number },
+  ): Promise<McpCallResult>;
+  /** Called once when the connection drops (the process exited, the server went away). */
+  onClose(listener: () => void): void;
+  close(): Promise<void>;
+}
+
+export interface McpConnector {
+  connect(transport: McpServerConfig["transport"], opts?: { name?: string }): Promise<McpSession>;
+}
+
+// ── Executor Cloud ───────────────────────────────────────────────────────────────────────────
+
+export type ExecutorMetaTool = "skills" | "search" | "describe" | "call" | "execute";
+
+/** What a `call`, `execute` or `resume` came back with (Executor's McpExecutionResult). */
+export type ExecutorOutcome =
+  | { status: "completed"; result: unknown; text: string }
+  | {
+      status: "approval-required";
+      requestId: string;
+      app: string;
+      tool: string;
+      kind?: "query" | "mutation";
+      input: Record<string, unknown>;
+      message: string;
+      expiresAt?: number;
+    }
+  | {
+      status: "input-required";
+      requestId: string;
+      app: string;
+      tool: string;
+      message: string;
+      schema?: Record<string, unknown>;
+      expiresAt?: number;
+    }
+  | { status: "unavailable"; requestId?: string; reason: string; message: string }
+  /** Anything else (busy, capacity-exceeded, a transport error): passed to the agent as text. */
+  | { status: "other"; text: string; isError: boolean };
+
+export interface ExecutorCatalogApp {
+  id: string;
+  name: string;
+  description?: string;
+  category?: string;
+  icon?: string;
+  auth: Array<{ method: string; kind: string; label?: string }>;
+}
+
+export interface ExecutorPort {
+  /** Token and organization are both set. */
+  configured(): boolean;
+  /** The read-only meta-tools (`skills`, `search`, `describe`) and `call` / `execute`. */
+  run(tool: ExecutorMetaTool, input: Record<string, unknown>, signal?: AbortSignal): Promise<ExecutorOutcome>;
+  /** Answer a paused call: accept or decline an approval, or fill in an input request. */
+  resume(
+    requestId: string,
+    response: { action: "accept" | "decline" | "cancel"; content?: Record<string, unknown> },
+    signal?: AbortSignal,
+  ): Promise<ExecutorOutcome>;
+  /** Start connecting an account for an app's requirement: the link the user opens. */
+  connect(app: string, requirement?: string): Promise<{ url: string; connectionId: string }>;
+  connection(connectionId: string): Promise<{
+    status: "pending" | "expired" | "cancelled" | "completed";
+    account?: string;
+  }>;
+  catalog(): Promise<ExecutorCatalogApp[]>;
+  close(): Promise<void>;
 }

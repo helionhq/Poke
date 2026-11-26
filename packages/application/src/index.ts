@@ -63,3 +63,11 @@ export {
   type ApprovalsDeps,
 } from "./approvals.js";
 export { evaluateLogic, isLogic } from "./logic.js";
+export {
+  IntegrationService,
+  gatedInput,
+  integrationsSummary,
+  titleCase,
+  type BrowseBridge,
+  type IntegrationsDeps,
+} from "./integrations.js";

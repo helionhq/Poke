@@ -194,3 +194,92 @@ export const VaultReveal = z.object({ secrets: z.record(z.string(), z.string()) 
 
 export const ApprovalRuleList = z.object({ rules: z.array(ApprovalRule) });
 export const PendingApprovals = z.object({ approvals: z.array(ApprovalRequest) });
+
+// ── Integrations (milestone 6) ───────────────────────────────────────────────────────────────
+
+export const IntegrationAccount = z.object({
+  id: z.string(),
+  appId: z.string(),
+  label: z.string(),
+  identity: z.string().optional(),
+  status: z.enum(["connected", "pending", "error"]),
+});
+
+export const Integration = z.object({
+  id: z.string(),
+  name: z.string(),
+  source: z.enum(["executor", "mcp"]),
+  icon: z.string().optional(),
+  category: z.string().optional(),
+  custom: z.object({ from: z.string(), toolCount: z.number().optional() }).optional(),
+  accounts: z.array(IntegrationAccount),
+  defaultAccountId: z.string().optional(),
+  capabilities: z.array(
+    z.object({
+      id: z.string(),
+      label: z.string(),
+      tools: z.array(z.string()),
+      mode: z.enum(["on", "off", "ask"]),
+    }),
+  ),
+  connectedAt: z.number().optional(),
+});
+
+export const IntegrationList = z.object({
+  integrations: z.array(Integration),
+  executor: z.object({ configured: z.boolean() }),
+});
+
+export const CatalogApp = z.object({
+  id: z.string(),
+  name: z.string(),
+  description: z.string().optional(),
+  category: z.string().optional(),
+  icon: z.string().optional(),
+  auth: z.array(z.object({ method: z.string(), kind: z.string(), label: z.string().optional() })),
+});
+export const CatalogList = z.object({ apps: z.array(CatalogApp) });
+
+/** Headers and env hold `{{vault:…}}` placeholders for secrets, never values. */
+export const McpTransport = z.discriminatedUnion("kind", [
+  z.object({
+    kind: z.literal("stdio"),
+    command: z.string().min(1).max(300),
+    args: z.array(z.string().max(500)).max(30),
+    env: z.record(z.string(), z.string().max(2000)).optional(),
+  }),
+  z.object({
+    kind: z.literal("http"),
+    url: z.url(),
+    headers: z.record(z.string(), z.string().max(2000)).optional(),
+  }),
+]);
+
+export const McpServer = z.object({
+  id: z.string(),
+  name: z.string(),
+  transport: McpTransport,
+  enabled: z.boolean(),
+  toolCount: z.number().optional(),
+  createdAt: z.number(),
+  connected: z.boolean(),
+  error: z.string().optional(),
+});
+export const McpServerList = z.object({ servers: z.array(McpServer) });
+export const McpServerAddRequest = z.object({
+  id: z.string().regex(/^[a-z0-9][a-z0-9-]{0,31}$/, "lowercase letters, digits and dashes"),
+  name: z.string().min(1).max(60).optional(),
+  transport: McpTransport,
+});
+export const McpServerResponse = z.object({ server: McpServer });
+
+/** Service keys in the vault's system namespace, set from the CLI over the admin socket. */
+export const SERVICE_KEYS = {
+  "executor.token": "Executor personal access token",
+  "keenable.key": "Keenable API key",
+} as const;
+export type ServiceKey = keyof typeof SERVICE_KEYS;
+export const ServiceKeyList = z.object({
+  keys: z.array(z.object({ key: z.string(), label: z.string(), set: z.boolean() })),
+});
+export const ServiceKeySetRequest = z.object({ value: z.string().min(1).max(4000) });

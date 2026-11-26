@@ -116,3 +116,30 @@ redacted before they are stored.
 - Every decision (allowed, denied, by rule, expired) is logged with a sha256 of the arguments (keys
   sorted). Arguments kept for display are redacted first. An approval whose agent stops waiting
   expires, and so does its block.
+
+## Integrations (milestone 6)
+
+- **Executor always runs in model mode.** The bridge connects to
+  `https://mcp.executor.sh/org/<org>/mcp?elicitation_mode=model`; with a token on the plain URL
+  Executor would approve gated calls by itself. A gated call comes back as `approval-required` and
+  goes through `ApprovalService.gate` like every other OK.
+- **Agents can't approve their own calls.** `executor_resume` only accepts input requests
+  (`elc_…`); approval ids (`apr_…`) are refused. Only the stored approval's block resumes the call,
+  and the bridge accepts or declines on Executor's side itself.
+- An edited draft can't be passed through Executor's resume (approvals accept no content), so the
+  original call is declined and the agent sends the edited text again. That one new call goes
+  through without a second OK only if it carries every edited value, for the same task and tool,
+  within 10 minutes; the decision is logged like any other.
+- The Executor token and Keenable key live in the vault's system namespace. The CLI never takes them
+  as arguments: `poke config executor.token` prompts, or reads `--stdin`. The Keenable SDK is given
+  an explicit (possibly empty) key and base URL so it never reads environment variables.
+- **Local MCP servers** get placeholders, not secrets: headers and env hold
+  `{{vault:name.field}}`, filled in only when the server is started, and stored as placeholders.
+  Stdio servers inherit only the MCP SDK's short list of safe environment variables (HOME, PATH,
+  …) plus their own env, so provider keys in Poke's environment never reach them. Their tools run
+  without asking, as the brief says, with placeholders filled in and output redacted.
+- **browse** is reached through `browse mcp` (stdio). The relay must be bound to the server's
+  Tailscale IP (`browse set hostname <tailscale-ip>`), never 0.0.0.0. Each browser call first checks
+  `status` and reports plainly when no browser is connected.
+- Executor's app catalog is a public feed (`catalog.executor.sh/index.json`); nothing about the user
+  is sent to fetch it.

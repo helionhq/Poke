@@ -17,6 +17,8 @@ import type { EventHub } from "./core/hub.js";
 import { evaluateLogic, isLogic } from "./logic.js";
 import { text } from "./tools/gateway.js";
 
+const EDITED_TTL_MS = 10 * 60_000;
+
 /** A gated call as Executor paused it (milestone 6 fills this in from the elicitation). */
 export interface ApprovalInput {
   integration: string;
@@ -42,6 +44,8 @@ export interface ApprovalOutcome {
   note?: string;
   /** A draft the user edited before sending: the final fields. */
   final?: Record<string, unknown>;
+  /** The paused call's reference (Executor's requestId), set once it's decided. */
+  executionId?: string;
 }
 
 export interface ApprovalsDeps {
@@ -62,6 +66,8 @@ export interface ApprovalsDeps {
  * (from that block) resumes the agent. Every decision is logged with a hash of the arguments.
  */
 export class ApprovalService implements ApprovalDecider {
+  #edited: Array<{ taskId: string; integration: string; tool: string; values: string[]; until: number }> = [];
+
   constructor(private readonly deps: ApprovalsDeps) {}
 
   /** Expire requests nobody waits on (after a restart, or when their task ends). */
@@ -96,15 +102,22 @@ export class ApprovalService implements ApprovalDecider {
    */
   async gate(
     ctx: ToolCallContext,
-    input: ApprovalInput,
+    input: ApprovalInput | undefined,
     run: (outcome: ApprovalOutcome) => Promise<ToolResultData> | ToolResultData,
   ): Promise<ToolResultData> {
     if (ctx.resume) {
       const value = (ctx.resume.value ?? {}) as Partial<ApprovalOutcome> & { expired?: boolean };
       if (value.expired || !value.approvalId)
         return text("No decision came in time. Don't retry it; report what's blocked.", true);
-      return run({ ...value, allowed: value.allowed === true, approvalId: value.approvalId });
+      const decided = this.deps.repos.approvals.get(value.approvalId);
+      return run({
+        ...value,
+        allowed: value.allowed === true,
+        approvalId: value.approvalId,
+        ...(decided ? { executionId: decided.resume.executionId } : {}),
+      });
     }
+    if (!input) throw new DomainError("invalid", "Nothing to approve");
     if (ctx.agent.kind !== "executor")
       throw new DomainError("unavailable", "Only agents can run tools that need an OK");
     const taskId = ctx.agent.taskId;
@@ -130,6 +143,13 @@ export class ApprovalService implements ApprovalDecider {
       ...(input.offer ? { offer: input.offer } : {}),
       createdAt: now,
     };
+    if (this.#takeEdited(taskId, input)) {
+      request.status = "allowed";
+      request.decidedAt = now;
+      this.deps.repos.approvals.save(request);
+      this.#log(request);
+      return run({ allowed: true, approvalId: request.id, executionId: input.resume.executionId });
+    }
     const rule = this.matchingRule(input.integration, input.tool, input.args);
     if (rule) {
       request.status = "allowed";
@@ -137,11 +157,43 @@ export class ApprovalService implements ApprovalDecider {
       request.decidedAt = now;
       this.deps.repos.approvals.save(request);
       this.#log(request);
-      return run({ allowed: true, approvalId: request.id, ruleId: rule.id });
+      return run({
+        allowed: true,
+        approvalId: request.id,
+        ruleId: rule.id,
+        executionId: input.resume.executionId,
+      });
     }
     this.deps.repos.approvals.save(request);
     this.deps.agents.ask(taskId, { kind: "approval", approvalId: request.id }, needId);
     return { output: [], park: { needId } };
+  }
+
+  /**
+   * Arham edited a draft before tapping Send, but Executor resumes a paused call only as it was.
+   * The call is declined and the agent sends the edited text again; that one call goes through
+   * without a second OK when it carries every edited value, for the same tool, within 10 minutes.
+   */
+  allowEdited(taskId: string, integration: string, tool: string, values: string[]): void {
+    const now = this.deps.clock.now();
+    this.#edited = this.#edited.filter((e) => e.until > now);
+    this.#edited.push({ taskId, integration, tool, values, until: now + EDITED_TTL_MS });
+  }
+
+  #takeEdited(taskId: string, input: ApprovalInput): boolean {
+    const now = this.deps.clock.now();
+    const serialized = JSON.stringify(input.args);
+    const index = this.#edited.findIndex(
+      (e) =>
+        e.until > now &&
+        e.taskId === taskId &&
+        e.integration === input.integration &&
+        e.tool === input.tool &&
+        e.values.every((v) => serialized.includes(JSON.stringify(v).slice(1, -1))),
+    );
+    if (index < 0) return false;
+    this.#edited.splice(index, 1);
+    return true;
   }
 
   /** The first always-allow rule for this tool whose constraint holds for these arguments. */
@@ -242,7 +294,7 @@ export function approvalBlock(request: ApprovalRequest): { kind: string; props: 
   return {
     kind: "tool_approval",
     props: {
-      app: request.integration,
+      app: displayName(request.integration),
       tool: request.tool,
       action: request.title,
       ...(request.details.length ? { details: request.details.slice(0, 10) } : {}),
@@ -250,4 +302,13 @@ export function approvalBlock(request: ApprovalRequest): { kind: string; props: 
       ...(request.offer ? { always: request.offer.description } : {}),
     },
   };
+}
+
+/** "google-calendar" → "Google Calendar", as the ToolApproval shows the app. */
+function displayName(id: string): string {
+  return id
+    .split(/[-_\s]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }

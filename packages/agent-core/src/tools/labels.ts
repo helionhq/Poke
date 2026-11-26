@@ -87,6 +87,25 @@ export function toolLabel(name: string, args: unknown, app?: AppRef): ToolLabel 
       return { done: "Looked for a tool", live: "Looking for a tool" };
     case "vault_list":
       return { done: "Checked saved logins", live: "Checking saved logins" };
+    case "executor_search":
+    case "executor_describe":
+    case "executor_skills":
+      return { done: "Looked through your apps", live: "Looking through your apps" };
+    case "executor_call": {
+      const calls = arg(args, "calls");
+      const first = Array.isArray(calls) ? (calls[0] as unknown) : calls;
+      const path = arg(first, "path");
+      const appId = typeof path === "string" ? path.replace(/^tools\./, "").split(".")[0] : undefined;
+      const appRef = app ?? (appId ? { id: appId, name: titleCase(appId), icon: appId } : undefined);
+      return appRef
+        ? { done: `Used ${appRef.name}`, live: `Using ${appRef.name}`, app: appRef }
+        : { done: "Used your apps", live: "Using your apps" };
+    }
+    case "executor_execute":
+    case "executor_resume":
+      return { done: "Used your apps", live: "Using your apps", ...(app ? { app } : {}) };
+    case "add_mcp_server":
+      return { done: "Added a tool server", live: "Adding a tool server" };
     default:
       break;
   }
@@ -96,4 +115,12 @@ export function toolLabel(name: string, args: unknown, app?: AppRef): ToolLabel 
   if (app) return { done: `Used ${app.name}`, live: `Using ${app.name}`, app };
   const readable = name.replace(/^mcp__[^_]+__/, "").replace(/[_-]+/g, " ");
   return { done: `Used ${readable}`, live: `Using ${readable}` };
+}
+
+function titleCase(id: string): string {
+  return id
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(" ");
 }

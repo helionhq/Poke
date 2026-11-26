@@ -9,8 +9,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 3 | Runtimes: Pi Durable executors, Claude Agent SDK, model registry, `poke login` / `poke model`, traces, compaction, side chats | ✅ done |
 | 4 | Blocks: catalog + `card`, state machines, actions API, agent tools, `ask_poke` parking | ✅ done |
 | 5 | Vault + approvals: encryption, placeholders, redaction, Face ID endpoints, ToolGateway, Executor approvals, always-allow | ✅ done |
-| 6 | Integrations: Executor bridge, Keenable, browse, local MCP | ⏳ next |
-| 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | |
+| 6 | Integrations: Executor bridge, Keenable, browse, local MCP | ✅ done |
+| 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | ⏳ next |
 | 8 | Routines + skills + notifications | |
 | 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | |
 | 10 | Voice: dictation, read aloud, call mode | |
@@ -142,3 +142,30 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   block, allow with always, rule match, a send as an edited draft, expiry on cancel), and over HTTP
   the vault's Face ID proofs (missing, wrong purpose, replayed, forged, admin socket) and placeholder
   filling through the real vault.
+
+### Milestone 6 — integrations
+- Executor Cloud over MCP in model mode: the six meta-tools as `executor_*` tools. A paused call
+  becomes an approval (draft, action card or tool approval, see decision 49) and Executor is resumed
+  with the answer. An edited draft is re-sent once without a second OK.
+- Sign-ins from a connect block: `userConnect`, polling until done, the account saved on the
+  integration. Executor's app catalog from its public feed.
+- Local MCP servers (stdio and HTTP) with vault placeholders in headers and env, as deferred
+  `mcp__<server>__<tool>` tools; add them from the API or by asking Poke (`add_mcp_server`).
+- browse through `browse mcp`, with a status check before each use.
+- Keenable `search_web` and `fetch_pages` for every agent, and `vault_list`.
+- CLI: `poke config executor.token` / `keenable.key` (prompt or `--stdin`), `poke config executor.org`.
+- Poke's prompt lists connected apps.
+- Protocol notes: docs/EXECUTOR-PROTOCOL.md.
+- Not yet:
+  - custom apps ("Set up by Poke") and MCP-by-URL through Executor are done by an agent with
+    `executor_execute` (appManagement); there is no dedicated flow;
+  - per-integration capability toggles (11.1) and choosing between several accounts are stored but not
+    enforced yet; they come with their screens in milestone 9;
+  - the browse relay's systemd unit and Tailscale binding go into the setup wizard in milestone 11.
+- To verify live (needs the user's Executor token): the `userConnect` link field, and a real gated
+  call end to end.
+- Tests: 133 in total, including the MCP bridge against a real stdio server (env isolation), the
+  Executor client against a fake Executor (pause, resume, already answered, connect, connection state,
+  catalog), Keenable (vault key, keyless, failed pages), and end to end: a gated Executor call parked,
+  approved from its block and resumed; the model refused when it tries to resume an approval; a
+  sign-in moving its block to connected; an MCP server with a vault placeholder; the edited-draft pass.

@@ -35,7 +35,11 @@
     "zod": "4.6.7",
     "@poke/runtime-pi-durable": "workspace:*",
     "@poke/runtime-claude-agent-sdk": "workspace:*",
-    "@poke/vault-sodium": "workspace:*"
+    "@poke/vault-sodium": "workspace:*",
+    "@poke/mcp-bridge": "workspace:*",
+    "@poke/integrations-executor": "workspace:*",
+    "@poke/search-keenable": "workspace:*",
+    "@poke/browse": "workspace:*"
   },
   "devDependencies": {
     "@types/ws": "8.18.2"

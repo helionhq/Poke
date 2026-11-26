@@ -9,6 +9,10 @@
       "@poke/source": "./src/index.ts",
       "types": "./dist/index.d.ts",
       "default": "./dist/index.js"
+    },
+    "./testing": {
+      "@poke/source": "./src/testing.ts",
+      "types": "./src/testing.ts"
     }
   },
   "files": [
@@ -21,5 +25,8 @@
   "dependencies": {
     "@poke/domain": "workspace:*",
     "@modelcontextprotocol/sdk": "1.32.2"
+  },
+  "devDependencies": {
+    "zod": "4.6.7"
   }
 }

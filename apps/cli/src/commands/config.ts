@@ -1,13 +1,16 @@
 import {
   coerceSetting,
   isSettingKey,
+  SERVICE_KEYS,
+  type ServiceKey,
   SETTING_DESCRIPTIONS,
   SETTINGS,
   type SettingKey,
 } from "@poke/contracts";
 import type { Context } from "../admin.js";
-import { cmd, dim, ok, p, pc, printJson, table, unwrap } from "../ui.js";
+import { cmd, dim, isInteractive, ok, p, pc, printJson, table, unwrap } from "../ui.js";
 import { devicesCommand, devicesMenu } from "./devices.js";
+import { readStdin } from "./models.js";
 
 /** Secret config keys (system namespace of the vault) are registered by later milestones. */
 export interface SecretKeyHandler {
@@ -43,7 +46,7 @@ export async function configCommand(
   key: string | undefined,
   value: string | undefined,
   rest: string[],
-  opts: { json?: boolean; list?: boolean; unset?: boolean },
+  opts: { json?: boolean; list?: boolean; unset?: boolean; stdin?: boolean },
 ): Promise<void> {
   if (key === "devices") return devicesCommand(ctx, value, rest[0], opts);
   if (opts.list || (!key && !process.stdout.isTTY)) return listConfig(ctx, opts);
@@ -56,16 +59,24 @@ export async function configCommand(
       console.log(ok(`${key} removed`));
       return;
     }
-    if (value === undefined) {
+    // Keys never come in as arguments: they'd stay in the shell history and show up in `ps`.
+    if (value !== undefined)
+      throw new Error(
+        `Don't put ${key} on the command line. Run ${cmd(`poke config ${key}`)} to be asked for it, or pipe it in with --stdin.`,
+      );
+    let secretValue: string | undefined;
+    if (opts.stdin) secretValue = await readStdin();
+    else if (isInteractive() && !opts.json)
+      secretValue = unwrap(
+        await p.password({ message: secret.label, validate: (v) => (v ? undefined : "Required") }),
+      );
+    if (!secretValue) {
       const set = await secret.isSet(ctx);
       if (opts.json) printJson({ key, set });
       else console.log(`${key}: ${set ? pc.green("set") : pc.yellow("not set")}`);
       return;
     }
-    const note = await secret.validate?.(ctx, value);
-    await secret.set(ctx, value);
-    console.log(ok(`${key} saved${note ? dim(` · ${note}`) : ""}`));
-    return;
+    return saveSecretKey(ctx, secret, secretValue);
   }
 
   if (!isSettingKey(key)) {
@@ -85,6 +96,12 @@ export async function configCommand(
   const parsed = coerceSetting(key, value);
   await writeSetting(ctx, key, parsed);
   console.log(ok(`${key} = ${String(parsed)}`));
+}
+
+async function saveSecretKey(ctx: Context, secret: SecretKeyHandler, value: string): Promise<void> {
+  const note = await secret.validate?.(ctx, value);
+  await secret.set(ctx, value);
+  console.log(ok(`${secret.key} saved${note ? dim(` · ${note}`) : ""}`));
 }
 
 async function listConfig(ctx: Context, opts: { json?: boolean }): Promise<void> {
@@ -136,7 +153,7 @@ async function configMenu(ctx: Context): Promise<void> {
         validate: (v) => (v ? undefined : "Required"),
       }),
     );
-    return configCommand(ctx, key, value, [], {});
+    return saveSecretKey(ctx, secretKeys.get(key)!, value);
   }
   const settings = await allSettings(ctx);
   const key = unwrap(
@@ -156,4 +173,31 @@ async function configMenu(ctx: Context): Promise<void> {
     }),
   );
   return configCommand(ctx, key, value, [], {});
+}
+
+// ── service keys in the vault's system namespace (milestone 6) ─────────────────────────────
+
+for (const [key, label] of Object.entries(SERVICE_KEYS) as Array<[ServiceKey, string]>) {
+  registerSecretKey({
+    key,
+    label,
+    async isSet(ctx) {
+      if (await ctx.online()) {
+        const list = await ctx.admin.call<{ keys: Array<{ key: string; set: boolean }> }>(
+          "GET",
+          "/admin/keys",
+        );
+        return list.keys.some((k) => k.key === key && k.set);
+      }
+      return (await ctx.localModels()).vault.system.has(key);
+    },
+    async set(ctx, value) {
+      if (await ctx.online()) await ctx.admin.call("PUT", `/admin/keys/${key}`, { value });
+      else (await ctx.localModels()).vault.system.set(key, value.trim());
+    },
+    async unset(ctx) {
+      if (await ctx.online()) await ctx.admin.call("DELETE", `/admin/keys/${key}`);
+      else (await ctx.localModels()).vault.system.delete(key);
+    },
+  });
 }

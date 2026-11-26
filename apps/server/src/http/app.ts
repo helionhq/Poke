@@ -8,6 +8,7 @@ import type { AuthMode, RouteModule, Surface } from "./route.js";
 import { registerAgentRoutes } from "./routes/agents.js";
 import { registerApprovalRoutes } from "./routes/approvals.js";
 import { registerBlockRoutes } from "./routes/blocks.js";
+import { registerIntegrationRoutes } from "./routes/integrations.js";
 import { registerVaultRoutes } from "./routes/vault.js";
 import { registerAttachmentRoutes } from "./routes/attachments.js";
 import { registerCoreRoutes } from "./routes/core.js";
@@ -68,6 +69,7 @@ export async function buildApp(
   registerBlockRoutes(app, services, surface);
   registerVaultRoutes(app, services, surface);
   registerApprovalRoutes(app, services, surface);
+  registerIntegrationRoutes(app, services, surface);
   registerEventsSocket(app, services);
   for (const register of modules) register(app, services, surface);
   return app;

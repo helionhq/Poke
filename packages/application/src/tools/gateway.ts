@@ -87,6 +87,17 @@ export class ToolGateway {
     }
   }
 
+  /** Remove a tool (an MCP server was removed or restarted). Agents started later won't see it. */
+  unregister(name: string): void {
+    this.#handlers.delete(name);
+    this.#options.delete(name);
+    for (const set of this.#profiles.values()) set.delete(name);
+  }
+
+  has(name: string): boolean {
+    return this.#handlers.has(name);
+  }
+
   specs(profile: ToolProfile): ToolSpec[] {
     return [...(this.#profiles.get(profile) ?? [])].map((name) => this.#handlers.get(name)!.spec);
   }
