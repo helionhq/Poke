@@ -36,6 +36,11 @@ export default tseslint.config(
     rules: { "no-console": "off" },
   },
   {
+    // Metro only bundles images and fonts it sees in a static require().
+    files: ["packages/ui-native/src/assets.ts", "apps/mobile/metro.config.js"],
+    rules: { "@typescript-eslint/no-require-imports": "off" },
+  },
+  {
     files: ["**/*.cjs"],
     languageOptions: { sourceType: "commonjs" },
     rules: { "@typescript-eslint/no-require-imports": "off" },

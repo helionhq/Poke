@@ -176,3 +176,30 @@ redacted before they are stored.
   Poke's full access to its machine.
 - **Routines run unattended** with the same rules as any agent: Executor-gated calls still ask (a
   push breaks through Focus for them), and the run's report goes to Poke, never straight to him.
+
+## iOS app (milestone 9)
+
+- **The phone never contacts third parties for images.** Card images and logos come through
+  `/v1/images` and `/v1/logos`, behind the device token. The proxy is an SSRF boundary: https on
+  the default port only, no credentials in the URL, every resolved address must be public
+  (loopback, private, link-local, CGNAT, multicast, ULA, IPv4-mapped and documentation ranges are
+  refused), checked again in the socket's own lookup so DNS rebinding can't swap it, at most three
+  redirects each re-checked, 8 s and 5 MB limits, raster image types only (no SVG), and
+  `nosniff`. Results are cached on disk by URL hash for 7 days.
+- **The Library's workspace view is read-only and stays inside the workspace.** Paths are resolved
+  through symlinks and must stay under the root; `..`, dot-files and links that point outside are
+  refused or hidden. Files download as `application/octet-stream` with `attachment`, never
+  rendered.
+- **Phone storage:** the session (server URL, device token, Cloudflare Access service token) is in
+  the Keychain, this device only, after first unlock. The vault key is in the Keychain behind
+  Face ID. The SQLite cache holds the thread as the server sent it (already redacted), the outbox
+  and preferences. Vault entries, revealed secrets and secret_request values are never cached:
+  the Vault screen keeps them in memory, clears them in the background and re-hides a revealed
+  value after 30 seconds; a secret field is emptied once saved.
+- **Unpairing** revokes the device on the server, clears the cache, the session and the vault key.
+  A 4401 or 4403 on the event stream signs the app out.
+- **Share tokens** can only `POST /v1/share`. The token is shown once in Settings and listed as a
+  device that can be removed.
+- **MCP servers added from the phone** take a key only as a vault placeholder in the header
+  (`Bearer {{vault:<name>.key}}`); the app never sends the key itself.
+- **`/icon.png`** is the only new unauthenticated route: a fixed image file.

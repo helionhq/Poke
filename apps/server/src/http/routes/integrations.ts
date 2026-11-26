@@ -1,5 +1,8 @@
 import {
   CatalogList,
+  IntegrationConnectResponse,
+  IntegrationPatchRequest,
+  IntegrationResponse,
   IntegrationList,
   McpServerAddRequest,
   McpServerList,
@@ -16,6 +19,7 @@ import { requireStack, type Services } from "../../services.js";
 import { route, type Surface } from "../route.js";
 
 const IdParams = z.object({ id: z.string().min(1).max(64) });
+const AccountParams = z.object({ id: z.string().min(1).max(64), accountId: z.string().min(1).max(120) });
 const KeyParams = z.object({ key: z.string().min(1).max(64) });
 
 function serviceKey(key: string): ServiceKey {
@@ -36,6 +40,51 @@ export function registerIntegrationRoutes(app: FastifyInstance, s: Services, sur
     app,
     { method: "GET", url: "/v1/integrations/catalog", auth: "device", response: CatalogList },
     async () => ({ apps: await requireStack(s).integrations.catalog() }),
+  );
+  route(
+    app,
+    {
+      method: "POST",
+      url: "/v1/integrations/:id/connect",
+      auth: "device",
+      params: IdParams,
+      response: IntegrationConnectResponse,
+      summary: "Start a sign-in for an app (or another account of it); the app opens the URL",
+    },
+    ({ params }) => requireStack(s).integrations.start({ app: params.id, kind: "app" }),
+  );
+  route(
+    app,
+    {
+      method: "PATCH",
+      url: "/v1/integrations/:id",
+      auth: "device",
+      params: IdParams,
+      body: IntegrationPatchRequest,
+      response: IntegrationResponse,
+    },
+    ({ params, body }) => {
+      const integrations = requireStack(s).integrations;
+      let integration = body.defaultAccountId
+        ? integrations.setDefaultAccount(params.id, body.defaultAccountId)
+        : undefined;
+      if (body.capability)
+        integration = integrations.setCapability(params.id, body.capability.id, body.capability.mode);
+      return { integration: integration! };
+    },
+  );
+  route(
+    app,
+    {
+      method: "DELETE",
+      url: "/v1/integrations/:id/accounts/:accountId",
+      auth: "device",
+      params: AccountParams,
+    },
+    ({ params }) => {
+      requireStack(s).integrations.disconnect(params.id, params.accountId);
+      return { deleted: true };
+    },
   );
   route(app, { method: "GET", url: "/v1/integrations/mcp", auth: "device", response: McpServerList }, () => ({
     servers: requireStack(s).integrations.mcpServers(),

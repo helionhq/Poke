@@ -8,7 +8,7 @@ import {
 } from "@poke/contracts";
 import { DomainError } from "@poke/domain";
 import type { FastifyInstance } from "fastify";
-import type { Services } from "../../services.js";
+import { requireStack, type Services } from "../../services.js";
 import { IdParams, route, type Surface } from "../route.js";
 
 export function registerThreadRoutes(app: FastifyInstance, s: Services, _surface: Surface): void {
@@ -16,6 +16,7 @@ export function registerThreadRoutes(app: FastifyInstance, s: Services, _surface
     ...s.thread.info(),
     latestSeq: s.hub.latestSeq(),
     pokeModelSet: s.db.models.get("poke") !== undefined,
+    ...(s.stack ? { vaultCount: s.stack.vault.list().length } : {}),
   }));
 
   route(
@@ -53,6 +54,16 @@ export function registerThreadRoutes(app: FastifyInstance, s: Services, _surface
         ...(body.replyTo ? { replyTo: body.replyTo } : {}),
         ...(body.context ? { context: body.context } : {}),
       }),
+  );
+  route(
+    app,
+    {
+      method: "POST",
+      url: "/v1/thread/stop",
+      auth: "device",
+      summary: "Stop Poke's current turn and the agents it started",
+    },
+    () => requireStack(s).poke.stop(),
   );
 
   route(app, { method: "GET", url: "/v1/messages/:id", auth: "device", params: IdParams }, ({ params }) => {

@@ -319,3 +319,40 @@ NotificationService ─ hub (message events) ─ presence ─ redact ─ BarkNot
 | `POST /v1/routines/:id/run` | device | run it now (the schedule stays) |
 | `GET /v1/skills`, `GET/PATCH/DELETE /v1/skills/:name` | device | list, read (with the SKILL.md body), enable or disable, remove |
 | `POST /admin/notifications/test` | admin socket | a test push |
+
+## iOS app (milestone 9)
+
+```
+apps/mobile (expo-router screens)
+   └─ PokeProvider ─ PokeClient (REST) ─ EventStream (/v1/events, resume by seq)
+                   ─ ThreadStore "main" (messages, blocks, traces, steps, deltas, activity)
+                   ─ Outbox (SQLite) ─ POST /v1/thread/messages (clientMessageId)
+                   ─ Cache (expo-sqlite: thread snapshot, outbox, prefs)
+   └─ @poke/ui-native (Doop components) ─ @poke/ui-tokens (tokens, fonts, wallpapers, mark)
+```
+
+- Packages: `@poke/client` (http, events, outbox, store, format), `@poke/ui-tokens`,
+  `@poke/ui-native`. dependency-cruiser keeps `ui-*` free of the domain and the client, and the
+  client free of the domain and application layers.
+- The app follows docs/IOS.md: one paired session, a cached thread drawn at launch, the stream
+  replaying from the cached seq, an outbox for everything sent.
+- Server additions: `ImageProxy` (infra/image-proxy.ts) for card images and logos,
+  `WorkspaceBrowser` (infra/workspace-browser.ts) for the Library, `InteractionOrchestrator.stop()`
+  for the composer's stop button, integration account and capability edits, and the share
+  endpoint taking small text files as text (Shortcuts).
+
+### API (milestone 9 additions)
+
+| Route | Auth | What |
+|---|---|---|
+| `POST /v1/thread/stop` | device | end Poke's turn and cancel the agents he started |
+| `GET /v1/thread` | device | now also `vaultCount` (the agent sheet's number) |
+| `GET /v1/images?src=` | device | a card image, fetched by the server (https, public hosts, raster only) |
+| `GET /v1/logos/:domain` | device | a site's icon (apple-touch-icon, then favicon) |
+| `GET /v1/library` | device | attachments: all, photos, files or from Poke; search; paging |
+| `GET /v1/library/workspace?path=` | device | a folder in Poke's workspace |
+| `GET /v1/library/workspace/file?path=` | device | download a workspace file |
+| `POST /v1/integrations/:id/connect` | device | start a sign-in; returns the URL to open |
+| `PATCH /v1/integrations/:id` | device | default account, a capability on or off |
+| `DELETE /v1/integrations/:id/accounts/:accountId` | device | disconnect one account |
+| `GET /icon.png` | none | Poke's mark, for Bark push icons |

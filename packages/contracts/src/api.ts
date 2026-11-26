@@ -84,6 +84,8 @@ export const ThreadInfo = z.object({
   messageCount: z.number(),
   latestSeq: z.number(),
   pokeModelSet: z.boolean(),
+  /** How many vault entries there are (the agent sheet shows the count; names stay behind Face ID). */
+  vaultCount: z.number().optional(),
 });
 export type ThreadInfo = z.infer<typeof ThreadInfo>;
 
@@ -131,6 +133,31 @@ export const TraceDetail = z.object({ trace: Trace, steps: z.array(Step), tasks:
 export const UploadResponse = z.object({ attachment: Attachment });
 
 export const ShareResponse = z.object({ messageId: z.string(), deepLink: z.string() });
+
+// ── Library ───────────────────────────────────────────────────────────────
+
+export const LibraryQuery = z.object({
+  filter: z.enum(["all", "photos", "files", "from_poke"]).default("all"),
+  q: z.string().max(200).optional(),
+  before: z.coerce.number().int().optional(),
+  limit: z.coerce.number().int().min(1).max(200).default(60),
+});
+export const LibraryList = z.object({ attachments: z.array(Attachment) });
+export type LibraryList = z.infer<typeof LibraryList>;
+
+/** One entry in Poke's workspace folder, browsed from the Library. */
+export const WorkspaceEntry = z.object({
+  name: z.string(),
+  /** Path relative to the workspace root, with forward slashes. */
+  path: z.string(),
+  kind: z.enum(["dir", "file"]),
+  size: z.number().optional(),
+  modifiedAt: z.number(),
+});
+export type WorkspaceEntry = z.infer<typeof WorkspaceEntry>;
+export const WorkspaceQuery = z.object({ path: z.string().max(1000).default("") });
+export const WorkspaceListing = z.object({ path: z.string(), entries: z.array(WorkspaceEntry) });
+export type WorkspaceListing = z.infer<typeof WorkspaceListing>;
 
 // ── Devices ───────────────────────────────────────────────────────────────
 
@@ -336,3 +363,20 @@ export const SkillList = z.object({ skills: z.array(Skill) });
 export const SkillDetail = z.object({ skill: Skill.extend({ body: z.string().optional() }) });
 export const SkillPatchRequest = z.object({ enabled: z.boolean() });
 export const NotificationTestResponse = z.object({ ok: z.literal(true) });
+
+// ── Integrations from the app (milestone 9) ──────────────────────────────────────────────────
+
+export const IntegrationConnectResponse = z.object({ url: z.string() });
+export const IntegrationPatchRequest = z
+  .object({
+    defaultAccountId: z.string().min(1).max(120).optional(),
+    capability: z.object({ id: z.string().min(1).max(80), mode: z.enum(["on", "off"]) }).optional(),
+  })
+  .refine((b) => b.defaultAccountId !== undefined || b.capability !== undefined, "Nothing to change");
+export type IntegrationPatchRequest = z.infer<typeof IntegrationPatchRequest>;
+export const IntegrationResponse = z.object({ integration: Integration });
+
+export type IntegrationAccount = z.infer<typeof IntegrationAccount>;
+export type Integration = z.infer<typeof Integration>;
+export type CatalogApp = z.infer<typeof CatalogApp>;
+export type McpServer = z.infer<typeof McpServer>;

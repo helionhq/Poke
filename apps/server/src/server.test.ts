@@ -71,6 +71,9 @@ const PNG = Buffer.from(
 
 describe("poke-server core", () => {
   it("answers health without auth and rejects unauthenticated thread reads", async () => {
+    const icon = await app.inject({ url: "/icon.png" });
+    expect(icon.statusCode).toBe(200);
+    expect(icon.headers["content-type"]).toBe("image/jpeg");
     expect((await app.inject({ url: "/v1/health" })).json()).toMatchObject({ ok: true, protocol: 1 });
     expect((await app.inject({ url: "/v1/thread" })).statusCode).toBe(401);
     expect(
@@ -196,10 +199,23 @@ describe("poke-server core", () => {
       payload: form.payload,
     });
     expect(multi.statusCode).toBe(200);
+    // Shortcuts sends a shared link as a small text file: it becomes the message text.
+    const linkForm = multipart(
+      {},
+      { name: "URL.txt", mime: "text/plain", data: Buffer.from("https://example.com/b\n") },
+    );
+    const link = await app.inject({
+      method: "POST",
+      url: "/v1/share",
+      headers: { ...share, ...linkForm.headers },
+      payload: linkForm.payload,
+    });
+    expect(link.statusCode).toBe(200);
     const page = (await app.inject({ url: "/v1/thread/messages", headers: auth })).json() as {
       messages: { parts: { type: string; text?: string }[]; origin: { kind: string } }[];
     };
-    expect(page.messages.map((m) => m.origin.kind)).toEqual(["share", "share"]);
+    expect(page.messages.map((m) => m.origin.kind)).toEqual(["share", "share", "share"]);
+    expect(page.messages[2]!.parts).toEqual([{ type: "text", text: "https://example.com/b" }]);
     expect(page.messages[0]!.parts[0]).toMatchObject({
       type: "text",
       text: "read later\n\nhttps://example.com/a",

@@ -5,8 +5,8 @@ export interface BarkOptions {
   url(): string | undefined;
   /** The Bark app's device key (vault system `bark.deviceKey`). */
   deviceKey(): string | undefined;
-  /** Shown next to the push (iOS 15+). */
-  icon?: string;
+  /** Shown next to the push (iOS 15+): a public https image URL. */
+  icon?: () => string | undefined;
   fetch?: typeof globalThis.fetch;
 }
 
@@ -33,7 +33,7 @@ export class BarkNotifier implements Notifier {
         ...(notification.group ? { group: notification.group } : {}),
         ...(notification.level ? { level: notification.level } : {}),
         ...(notification.sound ? { sound: notification.sound } : {}),
-        ...(this.options.icon ? { icon: this.options.icon } : {}),
+        ...(this.options.icon?.() ? { icon: this.options.icon() } : {}),
       }),
       signal: AbortSignal.timeout(15_000),
     });

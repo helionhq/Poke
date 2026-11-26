@@ -309,6 +309,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
   });
   const integrations = new IntegrationService({
     repos: kernel.db,
+    hub: kernel.hub,
     clock: kernel.clock,
     timers: kernel.timers,
     log,
@@ -369,6 +370,10 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
       new BarkNotifier({
         url: () => settings.get("bark.url"),
         deviceKey: () => stack.vault.system.get("bark.deviceKey"),
+        icon: () => {
+          const base = settings.get("public.url");
+          return base ? `${base.replace(/\/+$/, "")}/icon.png` : undefined;
+        },
       }),
     log,
     redact: (text) => redactor.redact(text),

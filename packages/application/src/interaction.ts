@@ -214,6 +214,18 @@ export class InteractionOrchestrator {
     }
   }
 
+  /**
+   * The composer's stop button: ends Poke's current turn and cancels the agents it started.
+   * Whatever was already said or done stays; Poke takes the next message fresh.
+   */
+  async stop(): Promise<{ stopped: boolean; tasks: number }> {
+    const running = this.deps.agents.list().filter((t) => t.status === "running" || t.status === "waiting");
+    for (const task of running) await this.deps.agents.cancel(task.id).catch(() => undefined);
+    const busy = this.#busy;
+    if (busy) await this.#session?.cancel();
+    return { stopped: busy || running.length > 0, tasks: running.length };
+  }
+
   async close(): Promise<void> {
     this.#closed = true;
     this.#idle?.cancel();

@@ -12,8 +12,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 6 | Integrations: Executor bridge, Keenable, browse, local MCP | ✅ done |
 | 7 | Memory: model gateway, Honcho deploy, Voyage, recall/remember, digest | ✅ done |
 | 8 | Routines + skills + notifications | ✅ done |
-| 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | ⏳ next |
-| 10 | Voice: dictation, read aloud, call mode | |
+| 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | ✅ done |
+| 10 | Voice: dictation, read aloud, call mode | ⏳ next |
 | 11 | Live Activity, OTA updates, release pipeline, setup docs | |
 | 12 | Polish pass | |
 
@@ -234,3 +234,38 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   message, a quiet run, a late catch-up, app edits, the catalog and `activate_skill`, an install
   that's announced and handed to an agent, pushes with secrets taken out and none while the app is
   open, and the routines and skills API on the real stack.
+
+### Milestone 9 — iOS app
+- Packages: `@poke/ui-tokens` (the Doop canvas's colours for light and dark, type, radii, fonts,
+  wallpapers, the mark, all bundled), `@poke/ui-native` (every Doop component in React Native:
+  NavBar, Composer, ListRow and ListGroup, Trace and Step, MessageActions, menus, and all blocks
+  through `BlockView`, with Liquid Glass and a blur fallback), `@poke/client` (REST, the resumable
+  event stream with backoff and presence, the outbox, the thread store, formatting, deep links).
+- App (`apps/mobile`, Expo SDK 58, expo-router): pairing by QR or link (makes the Face ID vault
+  key); the thread with wallpapers, day dividers, streaming replies, traces that open into their
+  steps, every block with haptics, long-press Copy / Select All / Reply, the add menu (recent
+  photos, Camera, Photos, Files, Scan Document, Library) with uploads, pending and failed bubbles,
+  and the stop button; search with filters and "From your history"; the agent sheet with the
+  wallpaper picker and counts; side chat; Routines and a routine's page; Skills and a skill's
+  page; the Vault behind Face ID (add, reveal, change, delete); Connect an app, an app's accounts
+  and capabilities, Add an MCP server; the Library (attachments and the workspace); Settings
+  (server, devices, share token, unpair); Always allowed; the voice screen's layout.
+- Offline: the thread is cached in SQLite and drawn at launch; messages sent offline wait in the
+  outbox and go out on reconnect. Deep links: `poke://thread?message=`, `poke://vault`,
+  `poke://routines/:id`, `poke://pair?d=`.
+- Native: a local Expo module for VisionKit's document camera (one PDF per scan).
+- Server: image and logo proxy, Library API (attachments and the workspace), `POST /v1/thread/stop`,
+  integration edits (connect, default account, capability on or off, disconnect one account),
+  `vaultCount`, `/icon.png` for push icons (milestone 8's leftover), and share accepting text sent
+  as a small file.
+- Docs: IOS.md rewritten, SHARE_SHORTCUT.md (the Shortcut, step by step).
+- Not yet: side chats render text only (the server's side chats reply in text; traces and blocks
+  inside them come with the polish pass); voice audio (milestone 10); Live Activity and OTA
+  (milestone 11).
+- To verify on a phone (needs a Mac build): Face ID keys across SideStore refreshes, signing
+  speed, the scanner module, Liquid Glass on iOS 26, and the Shortcut. `expo export` bundles the
+  app on Windows and in CI.
+- Tests: 192 Vitest (new: image proxy SSRF guards, workspace browser escapes, client store,
+  outbox, events and formatting, share text files, the icon route) and 12 Jest in the app
+  (base64url, pairing codes, vault signatures checked with Ed25519 verify, ListRow toggles,
+  search highlighting).

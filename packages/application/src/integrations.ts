@@ -23,6 +23,7 @@ import type { ApprovalInput, ApprovalOutcome, ApprovalService } from "./approval
 import type { BlockService, ConnectionStarter } from "./blocks.js";
 import { handler, json, text, type ToolGateway } from "./tools/gateway.js";
 import type { SecretResolver } from "./tools/secrets.js";
+import type { EventHub } from "./core/hub.js";
 
 /** browse's own MCP server (`browse mcp`), with a reader for its `status` result. */
 export interface BrowseBridge {
@@ -43,6 +44,8 @@ export interface IntegrationsDeps {
   mcp: McpConnector;
   resolver: SecretResolver;
   browse?: BrowseBridge;
+  /** Publishes integration.updated so the app refreshes its lists. */
+  hub?: EventHub;
 }
 
 /** The read-only Executor tools share one handler shape. */
@@ -266,7 +269,7 @@ export class IntegrationService implements ConnectionStarter {
   // ── Executor sign-ins (ConnectionStarter) ──────────────────────────────────────────────────
 
   /** The `connect` action on a connect_request block: start the sign-in, then watch it. */
-  async start(input: { app: string; kind: "app" | "custom"; blockId: string }): Promise<{ url: string }> {
+  async start(input: { app: string; kind: "app" | "custom"; blockId?: string }): Promise<{ url: string }> {
     const { executor } = this.deps;
     if (!executor.configured())
       throw new DomainError(
@@ -274,38 +277,43 @@ export class IntegrationService implements ConnectionStarter {
         "Executor isn't set up yet. On your server, run `poke config executor.org` and `poke config executor.token`.",
       );
     const { url, connectionId } = await executor.connect(input.app);
-    this.#polls.get(input.blockId)?.cancel();
+    const key = input.blockId ?? `app:${input.app}`;
+    this.#polls.get(key)?.cancel();
     const deadline = this.deps.clock.now() + CONNECT_DEADLINE_MS;
     const poll = () => {
       const timer = this.deps.timers.setTimeout(() => {
         void this.#checkConnection(input, connectionId, deadline, poll);
       }, CONNECT_POLL_MS);
-      this.#polls.set(input.blockId, timer);
+      this.#polls.set(key, timer);
     };
     poll();
     return { url };
   }
 
   async #checkConnection(
-    input: { app: string; blockId: string },
+    input: { app: string; blockId?: string },
     connectionId: string,
     deadline: number,
     again: () => void,
   ): Promise<void> {
     if (this.#closed) return;
+    const key = input.blockId ?? `app:${input.app}`;
     const fail = async (error: string) => {
-      this.#polls.delete(input.blockId);
-      await this.#blocks?.system(input.blockId, "failed", { error });
+      this.#polls.delete(key);
+      if (input.blockId) await this.#blocks?.system(input.blockId, "failed", { error });
+      else this.#changed(input.app);
     };
     try {
       const state = await this.deps.executor.connection(connectionId);
       if (state.status === "completed") {
-        this.#polls.delete(input.blockId);
+        this.#polls.delete(key);
         this.#saveAccount(input.app, connectionId, state.account);
-        await this.#blocks?.system(input.blockId, "connected", {
-          connectionId,
-          ...(state.account ? { account: state.account.slice(0, 200) } : {}),
-        });
+        this.#changed(input.app);
+        if (input.blockId)
+          await this.#blocks?.system(input.blockId, "connected", {
+            connectionId,
+            ...(state.account ? { account: state.account.slice(0, 200) } : {}),
+          });
         return;
       }
       if (state.status !== "pending") return void (await fail("The sign-in didn't finish"));
@@ -314,6 +322,59 @@ export class IntegrationService implements ConnectionStarter {
     }
     if (this.deps.clock.now() >= deadline) return void (await fail("The sign-in timed out"));
     again();
+  }
+
+  /** Removes one account from Poke's list (the app's own connection stays in Executor). */
+  disconnect(appId: string, accountId: string): void {
+    const existing = this.#integration(appId);
+    const accounts = existing.accounts.filter((a) => a.id !== accountId);
+    if (accounts.length === existing.accounts.length)
+      throw new DomainError("not_found", "That account isn't connected");
+    if (accounts.length === 0) this.deps.repos.integrations.delete(appId);
+    else
+      this.deps.repos.integrations.save({
+        ...existing,
+        accounts,
+        ...(existing.defaultAccountId === accountId ? { defaultAccountId: accounts[0]!.id } : {}),
+      });
+    this.#changed(appId);
+  }
+
+  /** Which account Poke uses for an app when a task doesn't name one. */
+  setDefaultAccount(appId: string, accountId: string): Integration {
+    const existing = this.#integration(appId);
+    if (!existing.accounts.some((a) => a.id === accountId))
+      throw new DomainError("not_found", "That account isn't connected");
+    const next = { ...existing, defaultAccountId: accountId };
+    this.deps.repos.integrations.save(next);
+    this.#changed(appId);
+    return next;
+  }
+
+  /** Poke's own on/off switch for a capability. "ask" belongs to Executor and can't be set here. */
+  setCapability(appId: string, capabilityId: string, mode: "on" | "off"): Integration {
+    const existing = this.#integration(appId);
+    const cap = existing.capabilities.find((c) => c.id === capabilityId);
+    if (!cap) throw new DomainError("not_found", "That capability doesn't exist");
+    if (cap.mode === "ask")
+      throw new DomainError("invalid", "This one asks first in Executor; change it there");
+    const next = {
+      ...existing,
+      capabilities: existing.capabilities.map((c) => (c.id === capabilityId ? { ...c, mode } : c)),
+    };
+    this.deps.repos.integrations.save(next);
+    this.#changed(appId);
+    return next;
+  }
+
+  #integration(appId: string): Integration {
+    const existing = this.deps.repos.integrations.get(appId);
+    if (!existing) throw new DomainError("not_found", `${appId} isn't connected`);
+    return existing;
+  }
+
+  #changed(appId: string): void {
+    this.deps.hub?.publish(() => [{ type: "integration.updated", integrationId: appId }]);
   }
 
   #saveAccount(app: string, connectionId: string, account?: string): void {

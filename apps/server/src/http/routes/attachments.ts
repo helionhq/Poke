@@ -92,6 +92,12 @@ async function readShare(
       if (part.type === "file") {
         const data = new Uint8Array(await part.toBuffer());
         if (data.byteLength === 0) continue;
+        // Shortcuts sends shared text and links as a small text file: put those in the message.
+        if (isSharedText(part.mimetype, data)) {
+          const value = new TextDecoder().decode(data).trim();
+          if (value) pieces.push(value);
+          continue;
+        }
         attachments.push(
           await s.attachments.store({
             name: part.filename || "shared",
@@ -118,4 +124,10 @@ async function readShare(
   const text = pieces.join("\n\n");
   if (!text && attachments.length === 0) throw new DomainError("invalid", "Nothing to share");
   return { text, attachments };
+}
+
+/** A shared snippet rather than a document: plain text or a link list, at most 8 KB. */
+export function isSharedText(mime: string, data: Uint8Array): boolean {
+  const type = mime.split(";")[0]?.trim().toLowerCase();
+  return (type === "text/plain" || type === "text/uri-list") && data.byteLength <= 8192;
 }
