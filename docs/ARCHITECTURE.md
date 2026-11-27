@@ -404,3 +404,50 @@ POST /v1/tts {messageId} ─► AssemblyAiTts.speak (HTTP, WAV) ─► cache <da
 | `WS /v1/voice/call` | device (full) | binary PCM16 both ways; JSON `mute`, `frame`, `camera`, `end` in; `ready`, `state`, `user`, `poke`, `interrupt`, `error`, `ended` out |
 | `GET /v1/settings` | device | the phone's settings |
 | `PATCH /v1/settings` | device | change them (unknown keys are ignored) |
+
+## Updates, release and the machine (milestone 11)
+
+```
+push to main ─► release.yml: fingerprint (ubuntu) ─ changed? ─► macOS: prebuild, archive unsigned,
+                Payload/Poke.app (+ PlugIns/PokeLiveActivity.appex) ─► Poke-<ver>.ipa + release.json
+                ─► GitHub Release ios-<build>-<sha7>-<fingerprint[:12]>
+
+poke update ─► git fetch (token via GIT_CONFIG_*) ─► checkout ─► pnpm install, build
+   └─► new CLI: update --apply <previous>
+         expo export ─► ~/poke/updates/ota/<runtime>/<ms>-<sha7>/ (+ expoConfig.json, update.json)
+         GitHub release for this fingerprint ─► ~/poke/updates/ipa/<build>/Poke.ipa + release.json
+         stop poke.service ─► back up poke.db ─► migrate ─► compose (if infra/compose changed)
+         start ─► health ─► (any failure: previous commit, DB backup, rebuild, restart)
+
+phone (expo-updates) ─ GET /v1/updates/manifest (device token) ─► UpdateStore.latest(runtime)
+                      ─ GET /v1/updates/assets/<runtime>/<dir>/<file>
+SideStore ─ GET /sidestore/<token>/source.json ─► sideStoreSource(UpdateStore.releases())
+          ─ GET /sidestore/<token>/Poke-<ver>-<build>.ipa
+```
+
+- `UpdateStore` (server/infra/updates.ts) only reads what `poke update` wrote. The manifest
+  follows expo-updates protocol 1: multipart with `manifest` and `extensions` parts, or 204 when
+  there is nothing for that runtime version. Asset hashes are base64url SHA-256 of the files; the
+  id is a UUID derived from the export's metadata, so the same export always has the same id.
+- `runtimeVersion` is the native fingerprint, so a JS update only reaches builds with the same
+  native code, and the release workflow builds an IPA only when the fingerprint is new.
+- `poke update` runs in two processes so migrations, compose rendering and the OTA export use the
+  new code. Rollback is the previous commit rebuilt, not a copy of the old build.
+- The machine: `poke.service` and `poke-update.timer` are systemd user units rendered from
+  `infra/systemd` (lingering keeps them running); cloudflared joins the compose project under the
+  `tunnel` profile once its env file exists. `poke start|stop|restart|logs` drive both.
+- Live Activity: `targets/live-activity` (the extension, via `@bacons/apple-targets`) and
+  `modules/poke-live-activity` (ActivityKit calls from the app). `src/live` maps tasks, steps and
+  live lines to what the Lock Screen shows; `TaskActivities` starts, updates and ends activities;
+  a background task refreshes them when iOS allows.
+
+### API (milestone 11 additions)
+
+| Route | Auth | What |
+|---|---|---|
+| `GET /v1/updates/manifest` | device | expo-updates manifest for `expo-runtime-version` (or 204) |
+| `GET /v1/updates/assets/*` | device | an update's bundle and assets |
+| `GET /sidestore/:token/source.json` | path token | the SideStore source |
+| `GET /sidestore/:token/:file` | path token | an IPA |
+| `GET /admin/updates` | admin | source URL and native builds (`poke status`) |
+| `POST /admin/tunnel/prepare` | admin | render cloudflared.env from the vault |

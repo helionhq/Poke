@@ -1,7 +1,7 @@
 # Poke's services (brief section 22). Started by `poke setup` (memory, notifications), never by hand:
 #   docker compose -p poke -f infra/compose/docker-compose.yml --env-file ~/poke/services/compose.env up -d
 # compose.env and honcho.env are rendered by the CLI from templates next to this file (0600).
-# cloudflared (milestone 11) joins this file in its milestone.
+# cloudflared reads its token from cloudflared.env, rendered by the same CLI from the vault.
 name: poke
 
 x-honcho: &honcho
@@ -77,7 +77,7 @@ services:
       retries: 10
 
   # Bark's push server (section 18). The Bark app registers with it at bark.url (bark.arham.im,
-  # which cloudflared maps to bark-server:8080); Poke posts pushes there. The image is Alpine, so
+  # which cloudflared maps to localhost:8090); Poke posts pushes there. The image is Alpine, so
   # BusyBox wget does the healthcheck.
   bark-server:
     image: finab/bark-server:v2.4.0
@@ -91,3 +91,20 @@ services:
       interval: 10s
       timeout: 5s
       retries: 6
+
+  # Cloudflare Tunnel (section 22): the only way in from the internet; the machine has no open
+  # ports. A remotely managed tunnel: its routes are set in the Cloudflare dashboard
+  # (poke.arham.im to http://localhost:7070, bark.arham.im to http://localhost:8090). Host
+  # networking because the API listens on 127.0.0.1 only. The token comes from cloudflared.env
+  # (TUNNEL_TOKEN, 0600), never the command line. The image is distroless (no shell for a
+  # healthcheck), so readiness is checked from the host: http://127.0.0.1:20241/ready.
+  # Started only with the tunnel profile, once the token is set (poke setup, tunnel step).
+  cloudflared:
+    image: cloudflare/cloudflared:2026.11.2
+    restart: unless-stopped
+    network_mode: host
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241", "run"]
+    env_file:
+      - path: ${POKE_SERVICES}/cloudflared.env
+        required: false

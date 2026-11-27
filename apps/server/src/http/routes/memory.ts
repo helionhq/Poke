@@ -1,6 +1,7 @@
 import { MemoryRecallQuery, MemoryRecallResponse, MemoryStatus } from "@poke/contracts";
 import type { FastifyInstance } from "fastify";
 import { finishMemory, prepareMemory } from "../../infra/honcho-deploy.js";
+import { prepareTunnel } from "../../infra/maintenance.js";
 import { requireStack, type Services } from "../../services.js";
 import { route, type Surface } from "../route.js";
 
@@ -22,6 +23,10 @@ export function registerMemoryRoutes(app: FastifyInstance, s: Services, surface:
   route(app, { method: "GET", url: "/admin/memory", auth: "admin", response: MemoryStatus }, () =>
     memoryStatus(s),
   );
+  // The tunnel token goes into cloudflared.env (0600) here, inside the server, like the Honcho env.
+  route(app, { method: "POST", url: "/admin/tunnel/prepare", auth: "admin" }, () => ({
+    ready: prepareTunnel({ system: requireStack(s).vault.system, paths: s.paths }),
+  }));
   route(app, { method: "POST", url: "/admin/memory/prepare", auth: "admin" }, () => {
     const layout = prepareMemory({ system: requireStack(s).vault.system, paths: s.paths });
     return { layout };

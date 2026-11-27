@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join } from "node:path";
 import { EMBEDDING_DIMENSIONS } from "@poke/domain";
 import type { MemoryStatus } from "@poke/contracts";
 import { finishMemory, HONCHO_REPO, HONCHO_VERSION, type MemoryLayout, prepareMemory } from "@poke/server";
@@ -54,9 +55,29 @@ function checkout(dir: string): void {
     throw new Error(`Couldn't move Honcho to ${HONCHO_VERSION}`);
 }
 
-export function compose(layout: MemoryLayout, args: string[]): void {
-  const base = ["compose", "-p", "poke", "-f", layout.composeFile, "--env-file", layout.composeEnv];
-  if (!run("docker", [...base, ...args])) throw new Error(`docker compose ${args[0]} failed`);
+/** `docker compose` for Poke's project; cloudflared joins once its token file exists. */
+export function composeArgs(
+  layout: Pick<MemoryLayout, "composeFile" | "composeEnv">,
+  args: string[],
+): string[] {
+  const tunnel = existsSync(join(dirname(layout.composeEnv), "cloudflared.env"))
+    ? ["--profile", "tunnel"]
+    : [];
+  return [
+    "compose",
+    "-p",
+    "poke",
+    "-f",
+    layout.composeFile,
+    "--env-file",
+    layout.composeEnv,
+    ...tunnel,
+    ...args,
+  ];
+}
+
+export function compose(layout: Pick<MemoryLayout, "composeFile" | "composeEnv">, args: string[]): void {
+  if (!run("docker", composeArgs(layout, args))) throw new Error(`docker compose ${args[0]} failed`);
 }
 
 // ── the setup step ───────────────────────────────────────────────────────────────────────────

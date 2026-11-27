@@ -1,6 +1,11 @@
 import { buildStatus, stackStatus, type StatusReport } from "@poke/server";
+import { spawnSync } from "node:child_process";
+import { existsSync } from "node:fs";
+import { memoryLayout } from "@poke/server";
 import type { Context } from "../admin.js";
 import { ago, bad, cmd, dim, ok, pc, printJson, warn } from "../ui.js";
+import { composeArgs } from "./memory.js";
+import { serverRunsUnderSystemd } from "./services.js";
 
 export async function getStatus(ctx: Context): Promise<StatusReport> {
   if (await ctx.online()) return ctx.admin.call<StatusReport>("GET", "/admin/status");
@@ -11,6 +16,7 @@ const k = (n: number) => (n >= 1000 ? `${Math.round(n / 1000)}K` : String(n));
 
 export async function statusCommand(ctx: Context, opts: { json?: boolean }): Promise<void> {
   const report = await getStatus(ctx);
+  await machineStatus(ctx, report);
   if (opts.json) {
     printJson(report);
     return;
@@ -66,7 +72,19 @@ export async function statusCommand(ctx: Context, opts: { json?: boolean }): Pro
     out.push(
       `${pc.bold("Push")}     ${push.on ? "Bark" : pc.yellow("not set up")}${push.on ? "" : dim(" · poke setup --only notifications")}`,
     );
+  const tunnel = report.sections.tunnel as { connected: boolean } | undefined;
+  out.push(
+    `${pc.bold("Tunnel")}   ${tunnel ? (tunnel.connected ? "connected" : pc.yellow("not connected")) : pc.yellow("not set up")}${tunnel?.connected ? "" : dim(tunnel ? " · poke logs tunnel" : " · poke setup --only tunnel")}`,
+  );
   out.push(`${pc.bold("Devices")}  ${report.devices.active} active`);
+  const iphone = report.sections.iphone as
+    { sourceUrl: string; releases: Array<{ version: string; buildVersion: string }> } | undefined;
+  if (iphone) {
+    const newest = iphone.releases[0];
+    out.push(
+      `${pc.bold("iPhone")}   ${newest ? `${newest.version} (${newest.buildVersion})` : pc.yellow("no native build yet")}${dim(` · SideStore source: ${iphone.sourceUrl}`)}`,
+    );
+  }
   out.push(`${pc.bold("Tasks")}    ${report.tasks.active} running`);
   const due = report.routines.nextDue;
   out.push(
@@ -93,4 +111,47 @@ export async function statusCommand(ctx: Context, opts: { json?: boolean }): Pro
   const errors = report.sections.errors as string[] | undefined;
   if (errors) for (const e of errors) out.push(warn(e));
   console.log(out.join("\n"));
+}
+
+/**
+ * What only the machine knows (brief section 21): poke.service, the Docker services, whether the
+ * tunnel is connected, and the iPhone app's SideStore source.
+ */
+async function machineStatus(ctx: Context, report: StatusReport): Promise<void> {
+  const services: Array<{ name: string; state: string }> = [];
+  if (serverRunsUnderSystemd()) {
+    const active = spawnSync("systemctl", ["--user", "is-active", "poke.service"], { encoding: "utf8" });
+    services.push({
+      name: "poke.service",
+      state: (active.stdout ?? "").trim() === "active" ? "running" : "stopped",
+    });
+  }
+  const layout = memoryLayout(ctx.paths);
+  if (existsSync(layout.composeEnv)) {
+    const ps = spawnSync("docker", composeArgs(layout, ["ps", "-a", "--format", "{{.Service}} {{.State}}"]), {
+      encoding: "utf8",
+    });
+    for (const line of (ps.stdout ?? "").split("\n").filter(Boolean)) {
+      const [name, state] = line.split(" ");
+      if (name && state) services.push({ name, state });
+    }
+  }
+  if (services.length > 0) report.sections.services = services;
+
+  if (existsSync(`${ctx.paths.services}/cloudflared.env`)) {
+    const ready = await fetch("http://127.0.0.1:20241/ready", { signal: AbortSignal.timeout(1500) })
+      .then((r) => r.ok)
+      .catch(() => false);
+    report.sections.tunnel = { connected: ready };
+  }
+  if (await ctx.online()) {
+    try {
+      report.sections.iphone = await ctx.admin.call<{
+        sourceUrl: string;
+        releases: Array<{ version: string; buildVersion: string; date: string }>;
+      }>("GET", "/admin/updates");
+    } catch {
+      // older server
+    }
+  }
 }

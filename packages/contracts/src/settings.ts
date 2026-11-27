@@ -28,6 +28,7 @@ export const SETTINGS = {
   "browse.host": z.string().min(1),
   "memory.recallLevel": z.enum(["minimal", "low", "medium", "high", "max"]),
   "memory.gatewayHost": z.union([z.ipv4(), z.ipv6()]),
+  "sidestore.token": z.string().regex(/^[A-Za-z0-9_-]{32,}$/),
 } as const;
 
 export type SettingKey = keyof typeof SETTINGS;
@@ -67,6 +68,7 @@ export const SETTING_DESCRIPTIONS: Record<SettingKey, string> = {
   "browse.host": "Tailscale IP the browse relay binds to",
   "memory.recallLevel": "Default Honcho dialectic reasoning level",
   "memory.gatewayHost": "Address the model gateway listens on (default: the docker0 bridge)",
+  "sidestore.token": "The secret path segment of the SideStore source URL (made on first use)",
 };
 
 export function isSettingKey(key: string): key is SettingKey {

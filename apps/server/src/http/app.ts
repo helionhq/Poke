@@ -19,6 +19,7 @@ import { registerThreadRoutes } from "./routes/thread.js";
 import { registerLibraryRoutes } from "./routes/library.js";
 import { registerMediaRoutes } from "./routes/media.js";
 import { registerVoiceRoutes } from "./routes/voice.js";
+import { registerUpdateRoutes } from "./routes/updates.js";
 
 /**
  * One Fastify app per surface: "public" (127.0.0.1:7070 behind the Cloudflare Tunnel, device
@@ -80,6 +81,7 @@ export async function buildApp(
   registerMediaRoutes(app, services, surface);
   registerLibraryRoutes(app, services, surface);
   registerVoiceRoutes(app, services, surface);
+  registerUpdateRoutes(app, services, surface);
   registerEventsSocket(app, services);
   for (const register of modules) register(app, services, surface);
   return app;

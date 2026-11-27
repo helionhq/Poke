@@ -1,0 +1,136 @@
+name: release
+
+# The native iOS build (brief section 23). The server, CLI and JS updates are built on Poke's
+# machine by `poke update`; this only makes the IPA SideStore installs, and only when the native
+# fingerprint changed, because macOS minutes are expensive on a private repo. Needs no secrets:
+# nothing is signed (SideStore signs on the phone) and the release goes up with GITHUB_TOKEN.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: Build even if this fingerprint already has a release
+        type: boolean
+        default: false
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  fingerprint:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    outputs:
+      fingerprint: ${{ steps.fp.outputs.fingerprint }}
+      build: ${{ steps.fp.outputs.build }}
+      version: ${{ steps.fp.outputs.version }}
+      tag: ${{ steps.fp.outputs.tag }}
+      needed: ${{ steps.check.outputs.needed }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Native fingerprint, version and build number
+        id: fp
+        working-directory: apps/mobile
+        run: |
+          FP=$(npx expo-updates runtimeversion:resolve --platform ios | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).runtimeVersion))")
+          BUILD=$(git rev-list --count HEAD)
+          VERSION=$(node -p "require('./package.json').version")
+          echo "fingerprint=$FP" >> "$GITHUB_OUTPUT"
+          echo "build=$BUILD" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "tag=ios-$BUILD-${GITHUB_SHA::7}-${FP::12}" >> "$GITHUB_OUTPUT"
+          echo "Fingerprint $FP, version $VERSION ($BUILD)"
+      - name: Is there a release for this fingerprint already?
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+          FP: ${{ steps.fp.outputs.fingerprint }}
+          FORCE: ${{ inputs.force }}
+        run: |
+          if [ "$FORCE" = "true" ]; then echo "needed=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if gh release list --limit 200 --json tagName --jq '.[].tagName' | grep -q -- "-${FP::12}$"; then
+            echo "needed=false" >> "$GITHUB_OUTPUT"
+            echo "Fingerprint unchanged: nothing to build (JS changes ship through poke update)."
+          else
+            echo "needed=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  ipa:
+    needs: fingerprint
+    if: needs.fingerprint.outputs.needed == 'true'
+    runs-on: macos-latest
+    timeout-minutes: 60
+    permissions:
+      contents: write
+    env:
+      BUILD_NUMBER: ${{ needs.fingerprint.outputs.build }}
+      VERSION: ${{ needs.fingerprint.outputs.version }}
+      FINGERPRINT: ${{ needs.fingerprint.outputs.fingerprint }}
+      TAG: ${{ needs.fingerprint.outputs.tag }}
+      COMMIT: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build workspace packages
+        run: pnpm build --filter @poke/mobile^...
+      - name: Prebuild (runs pod install)
+        run: pnpm --filter @poke/mobile exec expo prebuild --platform ios --clean
+      - name: Check the fingerprint didn't move during the build
+        working-directory: apps/mobile
+        run: |
+          NOW=$(npx expo-updates runtimeversion:resolve --platform ios | node -e "let s='';process.stdin.on('data',d=>s+=d).on('end',()=>console.log(JSON.parse(s).runtimeVersion))")
+          test "$NOW" = "$FINGERPRINT" || { echo "Fingerprint $NOW differs from $FINGERPRINT"; exit 1; }
+      - name: Archive (unsigned)
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace Poke.xcworkspace \
+            -scheme Poke \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination generic/platform=iOS \
+            -archivePath "$RUNNER_TEMP/Poke.xcarchive" \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            CURRENT_PROJECT_VERSION="$BUILD_NUMBER" \
+            archive | tail -n 200
+      - name: Package Payload/Poke.app into an IPA
+        run: |
+          APP="$RUNNER_TEMP/Poke.xcarchive/Products/Applications/Poke.app"
+          test -d "$APP/PlugIns/PokeLiveActivity.appex" || { echo "The Live Activity extension is missing from PlugIns/"; exit 1; }
+          # One build number for the app and its extension (SideStore and iOS both check).
+          for plist in "$APP/Info.plist" "$APP"/PlugIns/*.appex/Info.plist; do
+            /usr/libexec/PlistBuddy -c "Set :CFBundleVersion $BUILD_NUMBER" "$plist"
+          done
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R "$APP" "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry "Poke-$VERSION.ipa" Payload)
+          node apps/mobile/scripts/release-json.mjs "$APP" apps/mobile/ios/Poke/Poke.entitlements "$RUNNER_TEMP/ipa/release.json"
+          ls -la "$RUNNER_TEMP/ipa"
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$TAG" \
+            "$RUNNER_TEMP/ipa/Poke-$VERSION.ipa" "$RUNNER_TEMP/ipa/release.json" \
+            --target "$COMMIT" \
+            --title "Poke $VERSION ($BUILD_NUMBER)" \
+            --notes "Native build from $COMMIT. Fingerprint $FINGERPRINT. Poke's machine picks this up on the next poke update."

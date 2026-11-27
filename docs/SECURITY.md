@@ -224,3 +224,42 @@ redacted before they are stored.
   `browse.host`, `executor.org`…) stay CLI-only.
 - **Audio on the phone:** the mic runs only while dictating or on a call (the call ends when the
   app leaves the screen; there is no background audio mode). Nothing recorded is written to disk.
+
+## Updates, release pipeline and the tunnel (milestone 11)
+
+- **The only unauthenticated routes** are the SideStore source and its IPAs:
+  `GET /sidestore/<token>/source.json` and `GET /sidestore/<token>/Poke-<ver>-<build>.ipa`.
+  SideStore can't send credentials, so a random path segment stands in for one: 24 random bytes
+  (`sidestore.token`, base64url, made on first use), compared in constant time, and a wrong token
+  gets the same 404 as a missing file. The IPA is the unsigned app (no secrets in it; fonts and
+  wallpapers only). Rotate the token with `poke config sidestore.token --unset`; the next
+  `poke status` makes a new one and the source has to be added again.
+- **OTA updates are behind the device token** like every other `/v1` route. expo-updates only
+  sends headers declared at build time, so `authorization` and the two Cloudflare Access headers
+  are declared empty in `app.config.ts` and filled in after pairing
+  (`setUpdateRequestHeadersOverride`). Asset paths are resolved through `realpath` and must stay
+  inside the update's folder; the runtime version must match `[A-Za-z0-9._-]`. Updates aren't
+  code-signed (brief section 23): they come only from Poke's own server over HTTPS, behind the
+  token.
+- **CI needs no secrets.** The release workflow builds unsigned (`CODE_SIGNING_ALLOWED=NO`) and
+  publishes with the default `GITHUB_TOKEN` (`contents: write` on that job only); the other jobs
+  are read-only. SideStore signs on the phone with his Apple ID.
+- **The GitHub token** (`github.token`, fine-grained, read-only Contents on the repo) stays in the
+  vault's system namespace. `poke update` gives it to git through `GIT_CONFIG_*` environment
+  variables for `https://github.com/` only, never as an argument or in `.git/config`, and sends it
+  to the GitHub API only as a header. Release asset downloads follow GitHub's redirect to storage
+  without it (fetch drops `authorization` on the cross-origin hop).
+- **The tunnel token** (`cloudflare.tunnelToken`) goes from the vault into
+  `~/poke/services/cloudflared.env` (0600), read by cloudflared as `TUNNEL_TOKEN`: never on a
+  command line, so not in `ps` or the compose file. cloudflared runs with host networking and
+  reaches only what the dashboard routes name: `localhost:7070` (Poke's API) and `localhost:8090`
+  (bark-server). Its metrics listen on 127.0.0.1 only.
+- **No open ports.** The API, Honcho and bark-server listen on 127.0.0.1; the model gateway on the
+  Docker bridge; the browse relay on the Tailscale IP. SETUP.md has the ufw rules (deny incoming,
+  allow Tailscale, allow Docker networks to the gateway port).
+- **Updates roll back.** `poke update` refuses a checkout with local changes, backs up `poke.db`
+  before migrating, and on any failure restores the previous commit, the backup and the previous
+  build, and removes the new JS update so phones don't fetch it.
+- **The Live Activity** shows the task name and step line on the Lock Screen, visible without
+  unlocking. Step lines are already redacted (no vault values). It needs no App Group, so no data
+  is shared with the extension outside ActivityKit's content updates.

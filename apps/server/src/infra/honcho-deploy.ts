@@ -90,7 +90,7 @@ function ensureSecret(system: SystemSecrets, key: Parameters<SystemSecrets["get"
   return value;
 }
 
-function writePrivate(path: string, content: string): void {
+export function writePrivate(path: string, content: string): void {
   mkdirSync(dirname(path), { recursive: true });
   writeFileSync(path, content, { mode: 0o600 });
   chmodSync(path, 0o600);

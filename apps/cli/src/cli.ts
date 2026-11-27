@@ -1,11 +1,13 @@
-import { Command } from "commander";
+import { Command, Option } from "commander";
 import { createContext } from "./admin.js";
 import { configCommand } from "./commands/config.js";
 import { loginCommand, modelCommand } from "./commands/models.js";
 import "./commands/memory.js";
 import "./commands/notifications.js";
+import { logsCommand, serviceCommand } from "./commands/services.js";
 import { setupCommand } from "./commands/setup.js";
 import { statusCommand } from "./commands/status.js";
+import { updateCommand } from "./commands/update.js";
 import { bad } from "./ui.js";
 
 const program = new Command()
@@ -32,7 +34,10 @@ program
   .command("setup")
   .description("First-run wizard (idempotent; every step after preflight can be skipped)")
   .option("--preflight", "only run the preflight checks")
-  .option("--only <step>", "run one step: profile, logins, models, memory, notifications, pair")
+  .option(
+    "--only <step>",
+    "run one step: profile, logins, models, memory, notifications, tunnel, service, pair",
+  )
   .action(
     wrap(async (opts: { preflight?: boolean; only?: string }) =>
       setupCommand(ctx, {
@@ -99,6 +104,42 @@ program
   .description("Services, logins, models, context, usage, tasks and routines")
   .option("--json", "machine-readable output")
   .action(wrap(async (opts: { json?: boolean }) => statusCommand(ctx, opts)));
+
+for (const action of ["start", "stop", "restart"] as const) {
+  program
+    .command(action)
+    .description(
+      action === "start"
+        ? "Start Poke and its Docker services (or one service)"
+        : action === "stop"
+          ? "Stop Poke and its Docker services (or one service)"
+          : "Restart Poke and its Docker services (or one service)",
+    )
+    .argument("[service]", "poke, honcho, memory, bark, tunnel, or a Docker service name")
+    .action(wrap(async (service: string | undefined) => serviceCommand(ctx, action, service)));
+}
+
+program
+  .command("update")
+  .description("Update Poke from GitHub: build, migrate, restart, and publish the app update")
+  .option("--ref <ref>", "a branch, tag or commit instead of origin/main")
+  .option("--honcho", "also move Honcho to the version this release pins")
+  .addOption(new Option("--nightly", "run only if update.auto is on (the timer)").hideHelp())
+  .addOption(new Option("--apply <previous>", "second phase, run by the new build").hideHelp())
+  .action(
+    wrap(async (opts: { ref?: string; honcho?: boolean; nightly?: boolean; apply?: string }) =>
+      updateCommand(ctx, opts),
+    ),
+  );
+
+program
+  .command("logs")
+  .description("Logs for one service or all of them")
+  .argument("[service]", "poke, honcho, memory, bark, tunnel, or a Docker service name")
+  .option("-f, --follow", "keep following")
+  .action(
+    wrap(async (service: string | undefined, opts: { follow?: boolean }) => logsCommand(ctx, service, opts)),
+  );
 
 program
   .command("help [command]")

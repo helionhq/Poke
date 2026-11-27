@@ -1,4 +1,8 @@
 import type { ConfigContext, ExpoConfig } from "expo/config";
+import pkg from "./package.json";
+
+/** POKE_LIVE_ACTIVITY=0 builds without the Live Activity extension (brief section 18), e.g. if signing it ever fails. */
+const LIVE_ACTIVITY = process.env.POKE_LIVE_ACTIVITY !== "0";
 
 const MIC = "Talk to Poke: dictate messages and make voice calls.";
 
@@ -10,7 +14,8 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
   ...config,
   name: "Poke",
   slug: "poke",
-  version: "1.0.0",
+  // The app version is apps/mobile/package.json (brief section 23); CI sets the build number.
+  version: pkg.version,
   scheme: "poke",
   orientation: "portrait",
   userInterfaceStyle: "automatic",
@@ -25,11 +30,15 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
       NSSpeechRecognitionUsageDescription: "Turn what you say into text for Poke.",
       NSFaceIDUsageDescription: "Unlock your Vault.",
       ITSAppUsesNonExemptEncryption: false,
+      NSSupportsLiveActivities: LIVE_ACTIVITY,
     },
   },
   runtimeVersion: { policy: "fingerprint" },
   updates: {
     url: "https://poke.arham.im/v1/updates/manifest",
+    // Filled in at runtime after pairing (src/lib/updates.ts); expo-updates only lets the app set
+    // headers declared here.
+    requestHeaders: { authorization: "", "cf-access-client-id": "", "cf-access-client-secret": "" },
     enabled: true,
     checkAutomatically: "ON_LOAD",
     fallbackToCacheTimeout: 0,
@@ -65,6 +74,9 @@ export default ({ config }: ConfigContext): ExpoConfig => ({
     // Streaming mic and playback for dictation and calls (brief section 17). No background audio:
     // a call ends when the app leaves the screen.
     ["react-native-audio-api", { iosMicrophonePermission: MIC, iosBackgroundMode: false }],
+    // The Lock Screen Live Activity (targets/live-activity), no App Group: state goes through ActivityKit.
+    ...(LIVE_ACTIVITY ? ["@bacons/apple-targets"] : []),
   ],
+  extra: { ...config.extra, liveActivity: LIVE_ACTIVITY },
   experiments: { typedRoutes: false },
 });

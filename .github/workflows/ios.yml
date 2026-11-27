@@ -2,17 +2,10 @@ name: ios
 
 # An unsigned native build of the app: proves the native modules (react-native-audio-api, the
 # VisionKit scanner, the Expo modules) compile. Only runs when the app or its native inputs change,
-# because macOS runners are slow. Needs no secrets: nothing is signed or uploaded.
+# because macOS minutes are expensive on a private repo (about 190 a month on the Free plan):
+# pull requests and manual runs only. Needs no secrets: nothing is signed or uploaded.
 on:
   pull_request:
-    paths:
-      - apps/mobile/**
-      - packages/ui-native/**
-      - packages/ui-tokens/**
-      - pnpm-lock.yaml
-      - .github/workflows/ios.yml
-  push:
-    branches-ignore: [main]
     paths:
       - apps/mobile/**
       - packages/ui-native/**
@@ -60,3 +53,5 @@ jobs:
             -derivedDataPath build \
             CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
             build | tail -n 200
+      - name: The Live Activity extension is in PlugIns/
+        run: test -d apps/mobile/ios/build/Build/Products/Release-iphoneos/Poke.app/PlugIns/PokeLiveActivity.appex

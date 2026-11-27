@@ -262,6 +262,9 @@ export class PokeClient {
   tasks(all = false) {
     return this.request<{ tasks: Task[] }>("GET", "/v1/tasks", { query: { all: all ? "true" : undefined } });
   }
+  task(id: string) {
+    return this.request<{ task: Task; steps: Step[] }>("GET", `/v1/tasks/${enc(id)}`);
+  }
   cancelTask(id: string) {
     return this.request<unknown>("POST", `/v1/tasks/${enc(id)}/cancel`);
   }

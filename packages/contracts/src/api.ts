@@ -309,6 +309,8 @@ export const SERVICE_KEYS = {
   "keenable.key": "Keenable API key",
   "bark.deviceKey": "Bark device key (from the Bark app)",
   "assemblyai.key": "AssemblyAI API key (dictation, read aloud, calls)",
+  "github.token": "GitHub token, read-only on the Poke repo (poke update)",
+  "cloudflare.tunnelToken": "Cloudflare Tunnel token (poke.arham.im and bark.arham.im)",
 } as const;
 export type ServiceKey = keyof typeof SERVICE_KEYS;
 export const ServiceKeyList = z.object({

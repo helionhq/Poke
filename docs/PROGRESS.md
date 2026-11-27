@@ -14,8 +14,8 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 8 | Routines + skills + notifications | ✅ done |
 | 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | ✅ done |
 | 10 | Voice: dictation, read aloud, call mode | ✅ done |
-| 11 | Live Activity, OTA updates, release pipeline, setup docs | ⏳ next |
-| 12 | Polish pass | |
+| 11 | Live Activity, OTA updates, release pipeline, setup docs | ✅ done |
+| 12 | Polish pass | ⏳ next |
 
 ## Log
 
@@ -294,3 +294,33 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   turns, speech, barge-in and camera frames, whole-word speech buffering, the voice routes and
   sockets, the settings allow-list, per-turn effort in the Claude runtime) and 17 Jest in the app
   (PCM conversion and resampling, dictation text, the dictation session against a fake socket).
+
+### Milestone 11 — Live Activity, updates, release pipeline
+- Updates server: the expo-updates protocol 1 (`/v1/updates/manifest`, `/v1/updates/assets/*`,
+  behind the device token) over what `poke update` exports, and the SideStore source with its
+  IPAs behind a random path token. The app fills in its update headers after pairing and checks
+  on launch and resume. Checked against a real `expo export` (54 assets, every hash matches).
+- Release pipeline: `release.yml` builds the unsigned IPA on macOS only when the native
+  fingerprint has no release yet, checks the Live Activity extension is in `PlugIns/`, writes
+  `release.json` (version, build, fingerprint, entitlements and usage descriptions read from the
+  built app) and publishes a GitHub Release with `GITHUB_TOKEN`. `dev-client.yml` (manual) builds
+  the development client; `ios.yml` now runs on pull requests and by hand only.
+- Live Activity: a SwiftUI widget extension (`targets/live-activity`, `@bacons/apple-targets`)
+  and a local ActivityKit module; tasks start one in the foreground, WS events update it, the
+  outcome ends it, a background task refreshes it when iOS allows. No App Group.
+  `POKE_LIVE_ACTIVITY=0` leaves it out.
+- The machine: cloudflared in compose (host network, token from a 0600 env file, `tunnel`
+  profile), `poke.service` and the nightly update timer as systemd user units, `install.sh`, and
+  `poke start|stop|restart [service]`, `poke logs [service] [-f]`, `poke update` (two phases,
+  backup, migrations, compose, OTA export, IPA download, health check, rollback). Setup gains the
+  tunnel and service steps; `poke status` shows services, the tunnel, the native build and the
+  SideStore source URL. `github.token` and `cloudflare.tunnelToken` join the service keys.
+- Docs: SETUP.md written (install, setup steps, AssemblyAI, tunnel, running, updates, firewall,
+  files); IOS.md has the SideStore flow from Windows, refreshes, updates and the Live Activity.
+- Not checked here (needs a Mac, a phone, Docker or Cloudflare): the iOS prebuild and native build
+  with the extension (CI runs it), free-team provisioning of the extension, the Live Activity on
+  the Lock Screen, the compose file under Docker, the tunnel end to end, `poke update` on the
+  machine, and the SideStore install and refresh (the Shortcuts action name is undocumented).
+- Tests: 226 Vitest (new: the updates routes, maintenance (tunnel env, DB backup and restore),
+  the update helpers (git auth env, release lookup, pruning), service names, tunnel tokens and the
+  systemd units) and 21 Jest (Live Activity content and the activity controller).

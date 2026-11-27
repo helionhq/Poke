@@ -27,5 +27,13 @@ export {
   renderTemplate,
   type MemoryLayout,
 } from "./infra/honcho-deploy.js";
+export {
+  backupDatabase,
+  migrateDatabase,
+  prepareTunnel,
+  readSystemSecret,
+  restoreDatabase,
+} from "./infra/maintenance.js";
+export { repoRoot } from "./infra/honcho-deploy.js";
 export { runClaudeSetupToken } from "@poke/runtime-claude-agent-sdk";
 export { buildStatus, registerStatus, type StatusReport, type StatusContributor } from "./status.js";

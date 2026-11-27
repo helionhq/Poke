@@ -19,8 +19,11 @@ import {
   useSyncExternalStore,
 } from "react";
 import { AppState } from "react-native";
+import { registerBackgroundSync } from "../live/background";
+import { followTasks } from "../live";
 import { Cache } from "./cache";
 import { clearSession, loadSession, type Session } from "./session";
+import { fetchUpdateQuietly, setUpdateHeaders } from "./updates";
 import { deleteVaultKey } from "./vaultKey";
 
 type Listener = (event: PersistedEvent | LiveEvent) => void;
@@ -80,6 +83,10 @@ export function PokeProvider({ children }: { children: ReactNode }) {
       () => setSession(null),
     );
   }, []);
+  // JS updates need the device token too (src/lib/updates.ts).
+  useEffect(() => {
+    if (session !== undefined) setUpdateHeaders(session);
+  }, [session]);
   const signOut = useCallback(async () => {
     await clearSession();
     await deleteVaultKey().catch(() => {});
@@ -180,11 +187,14 @@ function Connected({
       if (timer) clearTimeout(timer);
       timer = setTimeout(() => cache.saveThread(session.url, store.snapshot()), 800);
     });
+    const stopFollowing = followTasks(client, store);
+    void registerBackgroundSync();
     const app = AppState.addEventListener("change", (next) => {
       if (next === "active") {
         stream.setPresence("foreground");
         stream.reconnectNow();
         void outbox.flush();
+        void fetchUpdateQuietly();
       } else if (next === "background") {
         stream.setPresence("background");
         cache.saveThread(session.url, store.snapshot());
@@ -194,6 +204,7 @@ function Connected({
       alive = false;
       if (timer) clearTimeout(timer);
       unsubscribe();
+      stopFollowing();
       app.remove();
       stream.stop();
     };

@@ -1,0 +1,23 @@
+# Poke's server (brief section 22). A systemd user unit, rendered by `poke setup` (the service
+# step) into ~/.config/systemd/user/. It runs as the machine's main user; lingering
+# (loginctl enable-linger, done by install.sh) keeps it running without anyone logged in.
+# Logs go to the journal (poke logs poke) and to ~/poke/logs.
+[Unit]
+Description=Poke server
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory={{repo}}
+Environment=NODE_ENV=production
+Environment=POKE_HOME={{home}}
+ExecStart={{node}} {{repo}}/apps/server/dist/main.js
+Restart=always
+RestartSec=3
+TimeoutStopSec=30
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target
