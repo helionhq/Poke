@@ -1,0 +1,11 @@
+dist/
+node_modules/
+pnpm-lock.yaml
+docs/BRIEF.md
+.claude/
+.agents/
+apps/mobile/ios/
+apps/mobile/android/
+*.md
+skills-lock.json
+packages/agent-core/src/prompts.generated.ts

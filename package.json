@@ -1,0 +1,37 @@
+{
+  "name": "poke",
+  "private": true,
+  "description": "Poke: a private, single-user personal agent (server, CLI, iOS app).",
+  "type": "module",
+  "packageManager": "pnpm@10.30.3",
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "eslint . --max-warnings=0",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "boundaries": "node scripts/check-boundaries.mjs",
+    "check": "pnpm boundaries && pnpm lint && pnpm typecheck && pnpm test",
+    "dev:server": "pnpm --filter @poke/server dev",
+    "poke": "node --conditions=@poke/source --experimental-strip-types --disable-warning=ExperimentalWarning apps/cli/src/main.ts",
+    "gen:prompts": "node scripts/gen-prompts.mjs"
+  },
+  "devDependencies": {
+    "@eslint/js": "10.0.1",
+    "@types/node": "24.19.4",
+    "dependency-cruiser": "18.9.0",
+    "eslint": "10.15.0",
+    "eslint-config-prettier": "10.1.8",
+    "globals": "17.14.0",
+    "prettier": "3.10.1",
+    "turbo": "2.11.13",
+    "typescript": "6.0.3",
+    "typescript-eslint": "8.74.0",
+    "vitest": "5.1.2"
+  }
+}

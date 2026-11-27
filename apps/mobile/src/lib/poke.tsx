@@ -1,0 +1,302 @@
+import {
+  EventStream,
+  Outbox,
+  PokeClient,
+  type LiveEvent,
+  type PersistedEvent,
+  type ServerFrame,
+  type StreamStatus,
+  ThreadStore,
+} from "@poke/client";
+import {
+  createContext,
+  type ReactNode,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { AppState } from "react-native";
+import { registerBackgroundSync } from "../live/background";
+import { followTasks } from "../live";
+import { Cache } from "./cache";
+import { clearSession, loadSession, type Session } from "./session";
+import { fetchUpdateQuietly, setUpdateHeaders } from "./updates";
+import { deleteVaultKey } from "./vaultKey";
+
+type Listener = (event: PersistedEvent | LiveEvent) => void;
+
+export interface Poke {
+  session: Session;
+  client: PokeClient;
+  store: ThreadStore;
+  outbox: Outbox;
+  cache: Cache;
+  status: StreamStatus;
+  /** Events the thread store doesn't keep (routines, skills, vault…), for screens that list them. */
+  onEvent(listener: Listener): () => void;
+  send(input: { text: string; attachmentIds?: string[]; replyTo?: string }): Promise<void>;
+  /** Fetches the newest page and replaces the thread (after a long time away). */
+  refetch(): Promise<void>;
+  /** Loads the page above the oldest message on screen. */
+  loadOlder(): Promise<void>;
+  signOut(): Promise<void>;
+}
+
+type State = { phase: "loading" } | { phase: "signed-out" } | { phase: "ready"; poke: Poke };
+
+const PokeContext = createContext<State>({ phase: "loading" });
+const SignInContext = createContext<(session: Session) => void>(() => {});
+
+export function usePokeState(): State {
+  return useContext(PokeContext);
+}
+
+/** The signed-in app; only call inside screens that render after pairing. */
+export function usePoke(): Poke {
+  const state = useContext(PokeContext);
+  if (state.phase !== "ready") throw new Error("Poke isn't paired yet");
+  return state.poke;
+}
+
+export function useSignIn(): (session: Session) => void {
+  return useContext(SignInContext);
+}
+
+/** Re-renders when the thread changes. */
+export function useThread(): ThreadStore {
+  const { store } = usePoke();
+  useSyncExternalStore(
+    (fn) => store.subscribe(fn),
+    () => store.version,
+  );
+  return store;
+}
+
+export function PokeProvider({ children }: { children: ReactNode }) {
+  const [session, setSession] = useState<Session | null | undefined>(undefined);
+  useEffect(() => {
+    loadSession().then(
+      (s) => setSession(s ?? null),
+      () => setSession(null),
+    );
+  }, []);
+  // JS updates need the device token too (src/lib/updates.ts).
+  useEffect(() => {
+    if (session !== undefined) setUpdateHeaders(session);
+  }, [session]);
+  const signOut = useCallback(async () => {
+    await clearSession();
+    await deleteVaultKey().catch(() => {});
+    setSession(null);
+  }, []);
+  return (
+    <SignInContext.Provider value={setSession}>
+      {session === undefined ? (
+        <PokeContext.Provider value={{ phase: "loading" }}>{children}</PokeContext.Provider>
+      ) : session === null ? (
+        <PokeContext.Provider value={{ phase: "signed-out" }}>{children}</PokeContext.Provider>
+      ) : (
+        <Connected key={session.token} session={session} signOut={signOut}>
+          {children}
+        </Connected>
+      )}
+    </SignInContext.Provider>
+  );
+}
+
+function Connected({
+  session,
+  signOut,
+  children,
+}: {
+  session: Session;
+  signOut: () => Promise<void>;
+  children: ReactNode;
+}) {
+  const [status, setStatus] = useState<StreamStatus>("connecting");
+  const listeners = useRef(new Set<Listener>());
+
+  const core = useMemo(() => {
+    const cache = new Cache();
+    const client = new PokeClient({
+      baseUrl: session.url,
+      token: session.token,
+      ...(session.headers ? { headers: session.headers } : {}),
+    });
+    const store = new ThreadStore("main");
+    const outbox = new Outbox(cache.outboxStorage(), async (entry) => {
+      await client.send({
+        text: entry.text,
+        clientMessageId: entry.clientMessageId,
+        attachmentIds: entry.attachmentIds,
+        ...(entry.replyTo ? { replyTo: entry.replyTo } : {}),
+        context: { timezone: Intl.DateTimeFormat().resolvedOptions().timeZone },
+      });
+    });
+    store.onOther = (event) => {
+      for (const fn of listeners.current) fn(event);
+    };
+    store.onLive = (event) => {
+      for (const fn of listeners.current) fn(event);
+    };
+    store.onConfirmed = (id) => void outbox.confirm(id);
+    outbox.subscribe(() => store.setPending(outbox.entries()));
+    const cached = cache.thread(session.url);
+    if (cached) store.restore(cached);
+    return { cache, client, store, outbox };
+  }, [session]);
+
+  // Frames that arrive while a fresh page loads are held, then applied on top of it: the reset
+  // would otherwise wipe them, and the socket won't send them again.
+  const held = useRef<ServerFrame[] | undefined>(undefined);
+  const apply = useCallback(
+    (frame: ServerFrame) => {
+      if (held.current) held.current.push(frame);
+      else if (core.store.apply(frame) === "refetch") void refetchRef.current().catch(() => {});
+    },
+    [core],
+  );
+  const refetchRef = useRef<() => Promise<void>>(async () => {});
+  const refetch = useCallback(async () => {
+    if (held.current) return; // one already running keeps everything that arrives
+    const frames: ServerFrame[] = [];
+    held.current = frames;
+    try {
+      const page = await core.client.messages({ limit: 50 });
+      core.store.reset(page);
+    } finally {
+      held.current = undefined;
+      // Events up to the page's seq are skipped by the store; newer ones and live frames apply.
+      for (const frame of frames) apply(frame);
+    }
+  }, [core, apply]);
+  refetchRef.current = refetch;
+
+  useEffect(() => {
+    const { cache, client, store, outbox } = core;
+    let alive = true;
+    void outbox.load().then(() => outbox.flush());
+    const stream = new EventStream({
+      baseUrl: session.url,
+      token: () => client.token,
+      ...(session.headers ? { headers: session.headers } : {}),
+      since: () => store.latestSeq,
+      presence: () => (AppState.currentState === "active" ? "foreground" : "background"),
+      onStatus: (s) => {
+        if (!alive) return;
+        setStatus(s);
+        if (s === "open") void outbox.flush();
+        if (s === "unauthorized") void signOut();
+      },
+      onFrame: apply,
+    });
+    // Nothing cached yet: load the newest page, then stream from its seq.
+    if (store.latestSeq === 0)
+      void refetch()
+        .catch(() => {})
+        .finally(() => alive && stream.start());
+    else stream.start();
+
+    // Save the cache a moment after changes settle.
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const unsubscribe = store.subscribe(() => {
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(() => cache.saveThread(session.url, store.snapshot()), 800);
+    });
+    const stopFollowing = followTasks(client, store);
+    void registerBackgroundSync();
+    const app = AppState.addEventListener("change", (next) => {
+      if (next === "active") {
+        stream.setPresence("foreground");
+        stream.reconnectNow();
+        void outbox.flush();
+        void fetchUpdateQuietly();
+      } else if (next === "background") {
+        stream.setPresence("background");
+        cache.saveThread(session.url, store.snapshot());
+      }
+    });
+    return () => {
+      alive = false;
+      if (timer) clearTimeout(timer);
+      unsubscribe();
+      stopFollowing();
+      app.remove();
+      stream.stop();
+    };
+  }, [core, session, signOut, refetch, apply]);
+
+  // Stable across status changes: screens subscribe in effects that clean up when it changes.
+  const onEvent = useCallback((fn: Listener) => {
+    listeners.current.add(fn);
+    return () => {
+      listeners.current.delete(fn);
+    };
+  }, []);
+
+  const poke: Poke = useMemo(
+    () => ({
+      session,
+      ...core,
+      status,
+      onEvent,
+      send: async (input) => {
+        await core.outbox.enqueue(input);
+      },
+      refetch,
+      loadOlder: async () => {
+        const before = core.store.oldestCursor;
+        if (!before || !core.store.hasOlder) return;
+        core.store.addPage(await core.client.messages({ before, limit: 50 }));
+      },
+      signOut,
+    }),
+    [session, core, status, refetch, signOut, onEvent],
+  );
+
+  return <PokeContext.Provider value={{ phase: "ready", poke }}>{children}</PokeContext.Provider>;
+}
+
+/**
+ * Loads something from the server, reloading when one of `events` arrives (e.g. routine.updated).
+ * Keeps the last good value while reloading; `error` is a readable message.
+ */
+export function useRemote<T>(
+  load: (poke: Poke) => Promise<T>,
+  deps: unknown[],
+  events: (PersistedEvent | LiveEvent)["type"][] = [],
+) {
+  const poke = usePoke();
+  const [data, setData] = useState<T>();
+  const [error, setError] = useState<string>();
+  const [loading, setLoading] = useState(true);
+  const loader = useRef(load);
+  loader.current = load;
+  const reload = useCallback(async () => {
+    setLoading(true);
+    try {
+      setData(await loader.current(poke));
+      setError(undefined);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Something went wrong");
+    } finally {
+      setLoading(false);
+    }
+  }, [poke.client, ...deps]);
+  useEffect(() => {
+    void reload();
+  }, [reload]);
+  const key = events.join(",");
+  useEffect(() => {
+    if (!key) return;
+    const types = new Set(key.split(","));
+    return poke.onEvent((e) => {
+      if (types.has(e.type)) void reload();
+    });
+  }, [poke, key, reload]);
+  return { data, error, loading, reload, setData };
+}

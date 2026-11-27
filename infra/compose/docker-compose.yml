@@ -1,0 +1,110 @@
+# Poke's services (brief section 22). Started by `poke setup` (memory, notifications), never by hand:
+#   docker compose -p poke -f infra/compose/docker-compose.yml --env-file ~/poke/services/compose.env up -d
+# compose.env and honcho.env are rendered by the CLI from templates next to this file (0600).
+# cloudflared reads its token from cloudflared.env, rendered by the same CLI from the vault.
+name: poke
+
+x-honcho: &honcho
+  image: poke-honcho:${HONCHO_VERSION}
+  build:
+    context: ${HONCHO_DIR}
+  env_file: ${POKE_SERVICES}/honcho.env
+  restart: unless-stopped
+  # The model gateway runs on the host's docker bridge address.
+  extra_hosts:
+    - "host.docker.internal:host-gateway"
+
+services:
+  honcho-api:
+    <<: *honcho
+    entrypoint: ["sh", "docker/entrypoint.sh"]
+    # Only Poke on this machine talks to Honcho.
+    ports:
+      - "127.0.0.1:${HONCHO_PORT}:8000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "/app/.venv/bin/python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=2).read()",
+        ]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 20s
+
+  honcho-deriver:
+    <<: *honcho
+    entrypoint: ["/app/.venv/bin/python", "-m", "src.deriver"]
+    depends_on:
+      honcho-api:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  postgres:
+    image: pgvector/pgvector:pg15
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: honcho
+      POSTGRES_DB: honcho
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - ${POKE_SERVICES}/data/postgres:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U honcho -d honcho"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:8.2
+    restart: unless-stopped
+    volumes:
+      - ${POKE_SERVICES}/data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Bark's push server (section 18). The Bark app registers with it at bark.url (bark.arham.im,
+  # which cloudflared maps to localhost:8090); Poke posts pushes there. The image is Alpine, so
+  # BusyBox wget does the healthcheck.
+  bark-server:
+    image: finab/bark-server:v2.4.0
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${BARK_PORT:-8090}:8080"
+    volumes:
+      - ${POKE_SERVICES}/data/bark:/data
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://127.0.0.1:8080/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+
+  # Cloudflare Tunnel (section 22): the only way in from the internet; the machine has no open
+  # ports. A remotely managed tunnel: its routes are set in the Cloudflare dashboard
+  # (poke.arham.im to http://localhost:7070, bark.arham.im to http://localhost:8090). Host
+  # networking because the API listens on 127.0.0.1 only. The token comes from cloudflared.env
+  # (TUNNEL_TOKEN, 0600), never the command line. The image is distroless (no shell for a
+  # healthcheck), so readiness is checked from the host: http://127.0.0.1:20241/ready.
+  # Started only with the tunnel profile, once the token is set (poke setup, tunnel step).
+  cloudflared:
+    image: cloudflare/cloudflared:2026.11.2
+    restart: unless-stopped
+    network_mode: host
+    profiles: ["tunnel"]
+    command: ["tunnel", "--no-autoupdate", "--metrics", "127.0.0.1:20241", "run"]
+    env_file:
+      - path: ${POKE_SERVICES}/cloudflared.env
+        required: false

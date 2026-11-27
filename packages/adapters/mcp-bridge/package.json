@@ -1,0 +1,32 @@
+{
+  "name": "@poke/mcp-bridge",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Generic MCP client to tools (stdio + streamable HTTP).",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@poke/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "@poke/source": "./src/testing.ts",
+      "types": "./src/testing.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@poke/domain": "workspace:*",
+    "@modelcontextprotocol/sdk": "1.32.2"
+  },
+  "devDependencies": {
+    "zod": "4.6.7"
+  }
+}

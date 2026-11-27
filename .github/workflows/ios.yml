@@ -1,0 +1,57 @@
+name: ios
+
+# An unsigned native build of the app: proves the native modules (react-native-audio-api, the
+# VisionKit scanner, the Expo modules) compile. Only runs when the app or its native inputs change,
+# because macOS minutes are expensive on a private repo (about 190 a month on the Free plan):
+# pull requests and manual runs only. Needs no secrets: nothing is signed or uploaded.
+on:
+  pull_request:
+    paths:
+      - apps/mobile/**
+      - packages/ui-native/**
+      - packages/ui-tokens/**
+      - pnpm-lock.yaml
+      - .github/workflows/ios.yml
+  workflow_dispatch:
+
+concurrency:
+  group: ios-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      # Metro bundles the JS during the Release build and loads these packages from dist.
+      - name: Build workspace packages
+        run: pnpm build --filter @poke/mobile^...
+      - name: Prebuild the iOS project
+        run: pnpm --filter @poke/mobile exec expo prebuild --platform ios --clean
+      - name: Xcode version
+        run: xcodebuild -version
+      - name: Build (unsigned, Release, device)
+        working-directory: apps/mobile/ios
+        run: |
+          set -o pipefail
+          xcodebuild \
+            -workspace Poke.xcworkspace \
+            -scheme Poke \
+            -configuration Release \
+            -sdk iphoneos \
+            -destination generic/platform=iOS \
+            -derivedDataPath build \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" \
+            build | tail -n 200
+      - name: The Live Activity extension is in PlugIns/
+        run: test -d apps/mobile/ios/build/Build/Products/Release-iphoneos/Poke.app/PlugIns/PokeLiveActivity.appex

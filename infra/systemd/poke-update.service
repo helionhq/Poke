@@ -1,0 +1,11 @@
+# The nightly `poke update` (brief section 21). It does nothing unless update.auto is on
+# (poke config update.auto true).
+[Unit]
+Description=Poke nightly update
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory={{repo}}
+Environment=POKE_HOME={{home}}
+ExecStart={{node}} {{repo}}/apps/cli/dist/main.js update --nightly

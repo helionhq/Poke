@@ -1,0 +1,25 @@
+{
+  "name": "@poke/ui-tokens",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Design tokens, fonts and images from the Doop canvas \"Poke One\".",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@poke/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./fonts/*": "./fonts/*",
+    "./assets/*": "./assets/*"
+  },
+  "files": [
+    "dist",
+    "fonts",
+    "assets"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  }
+}

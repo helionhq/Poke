@@ -1,0 +1,29 @@
+{
+  "name": "@poke/application",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Use cases and orchestrators.",
+  "type": "module",
+  "exports": {
+    ".": {
+      "@poke/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@poke/domain": "workspace:*",
+    "@poke/contracts": "workspace:*",
+    "@poke/blocks": "workspace:*",
+    "@poke/agent-core": "workspace:*",
+    "croner": "11.0.1",
+    "zod": "4.6.7"
+  }
+}
