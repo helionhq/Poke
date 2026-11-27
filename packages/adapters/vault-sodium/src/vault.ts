@@ -106,6 +106,11 @@ export class SodiumVault implements VaultPort {
         this.#changed();
       },
       has: (key) => this.#db.prepare("SELECT 1 FROM system WHERE key = ?").get(key) !== undefined,
+      updatedAt: (key) =>
+        (
+          this.#db.prepare("SELECT updated_at FROM system WHERE key = ?").get(key) as
+            { updated_at: number } | undefined
+        )?.updated_at,
       keys: () =>
         (this.#db.prepare("SELECT key FROM system ORDER BY key").all() as Array<{ key: string }>).map(
           (r) => r.key as SystemSecretKey,

@@ -33,6 +33,7 @@ import {
   type SystemNoteReason,
   type Task,
   type TaskNeed,
+  type ToolResultData,
   type Timers,
   type Trace,
   type TurnInput,
@@ -47,6 +48,7 @@ import type { PresenceTracker } from "./core/presence.js";
 import { buildDigest } from "./digest.js";
 import type { MemoryService } from "./memory.js";
 import type { RoutineService } from "./routines/service.js";
+import type { SideChatService } from "./sidechats.js";
 import type { SkillService } from "./skills/service.js";
 import type { ModelService } from "./models.js";
 import type { SettingsService } from "./settings.js";
@@ -79,6 +81,8 @@ export interface InteractionDeps {
   routines?: Pick<RoutineService, "frame" | "settle">;
   /** New skills to announce, and a fresh session forgetting activations. */
   skills?: Pick<SkillService, "takeAnnouncements" | "resetActivations">;
+  /** Side chats, for their ask_poke cards (created after Poke, so looked up when needed). */
+  sideChats?: () => Pick<SideChatService, "ask"> | undefined;
 }
 
 /** A block to show under the reply of the turn that handles an input (an agent's need). */
@@ -930,16 +934,41 @@ export class InteractionOrchestrator {
       ["executor"],
     );
     gateway.register(
-      handler(CORE_TOOLS.askPoke, (args, ctx) => {
+      handler(CORE_TOOLS.askPoke, async (args, ctx) => {
+        if (ctx.agent.kind === "sidechat") return this.#askInSideChat(ctx.agent.sideChatId, ctx.callId, args);
         if (ctx.agent.kind !== "executor") return text("Only agents can ask Poke.", true);
         if (ctx.resume) return text(resumeText(args.kind, ctx.resume.value));
         const needId = `need_${ctx.agent.taskId}_${ctx.callId}`.replace(/[^A-Za-z0-9_]/g, "_");
         agents.ask(ctx.agent.taskId, needFromArgs(args), needId);
         return { output: [], park: { needId } };
       }),
-      ["executor"],
+      ["executor", "sidechat"],
     );
     this.#registerBlockTools();
+  }
+
+  /**
+   * A side chat talks to him directly, so a question is just asked in the chat; a secret or a
+   * connection shows its card there, and the call waits until he deals with it.
+   */
+  async #askInSideChat(sideChatId: string, callId: string, args: AskPokeArgs): Promise<ToolResultData> {
+    if (args.kind === "question")
+      return text(
+        "Ask him yourself, right here in the chat, and end your turn: his answer is his next message.",
+      );
+    const sideChats = this.deps.sideChats?.();
+    if (!sideChats) return text("Cards can't be shown in this chat. Tell him what's needed instead.", true);
+    const needId = `need_${sideChatId}_${callId}`.replace(/[^A-Za-z0-9_]/g, "_");
+    const need = { ...needFromArgs(args), id: needId } as TaskNeed;
+    const card =
+      need.kind === "secret"
+        ? { kind: "secret_request", props: secretRequestProps(need) }
+        : need.kind === "connection"
+          ? { kind: "connect_request", props: connectRequestProps(need) }
+          : undefined;
+    if (!card) return text("Ask him in the chat instead.", true);
+    const value = await sideChats.ask(sideChatId, card, needId);
+    return text(resumeText(args.kind, value ?? { expired: true }));
   }
 
   /** Poke's block tools: each shows one block under the reply being written. */

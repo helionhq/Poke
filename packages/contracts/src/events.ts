@@ -34,6 +34,7 @@ export const LiveEvent = z.discriminatedUnion("type", [
   z.object({ type: z.literal("task.progress"), taskId: z.string(), traceId: z.string(), text: z.string() }),
   z.object({ type: z.literal("sidechat.message"), sideChatId: z.string(), message: Message }),
   z.object({ type: z.literal("sidechat.closed"), sideChatId: z.string() }),
+  z.object({ type: z.literal("sidechat.trace"), sideChatId: z.string(), trace: Trace, steps: z.array(Step) }),
 ]);
 export type LiveEvent = z.infer<typeof LiveEvent>;
 

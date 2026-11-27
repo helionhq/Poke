@@ -1,5 +1,6 @@
-import { type Message, type SideChatView } from "@poke/client";
+import { type Block, type Message, type SideChatView, type Step, type Trace } from "@poke/client";
 import {
+  BlockView,
   Button,
   Composer,
   Icon,
@@ -12,19 +13,30 @@ import {
 } from "@poke/ui-native";
 import * as Haptics from "expo-haptics";
 import { router } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Alert, FlatList, KeyboardAvoidingView, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { blockHandlers } from "../src/lib/handlers";
 import { usePoke } from "../src/lib/poke";
+import { TraceView } from "../src/thread/TraceRow";
 
 const textOf = (m: Message) => m.parts.flatMap((p) => (p.type === "text" ? [p.text] : [])).join("\n\n");
+const blockIds = (m: Message) => m.parts.flatMap((p) => (p.type === "block" ? [p.blockId] : []));
+
+type Traced = { trace: Trace; steps: Step[] };
+type Row =
+  | { key: string; kind: "user"; text: string }
+  | { key: string; kind: "poke"; text: string; blocks: string[] }
+  | { key: string; kind: "system"; text: string }
+  | { key: string; kind: "trace"; traced: Traced };
 
 /**
  * 09 Side chat: a quick question on the side that doesn't touch the main thread. It lives only
  * while open; "Send to Poke" hands the answer to the thread.
  */
 export default function SideChatScreen() {
-  const { client, onEvent } = usePoke();
+  const poke = usePoke();
+  const { client, onEvent } = poke;
   const c = useColors();
   const insets = useSafeAreaInsets();
   const [chat, setChat] = useState<SideChatView>();
@@ -33,6 +45,8 @@ export default function SideChatScreen() {
   const [deltas, setDeltas] = useState<Record<string, string>>({});
   const [activity, setActivity] = useState<"idle" | "thinking" | "working">("idle");
   const [sending, setSending] = useState(false);
+  const [blocks, setBlocks] = useState<Record<string, Block>>({});
+  const [traces, setTraces] = useState<Traced[]>([]);
   const id = useRef<string>(undefined);
 
   useEffect(() => {
@@ -40,8 +54,10 @@ export default function SideChatScreen() {
     client.openSideChat().then(
       ({ sideChat }) => {
         id.current = sideChat.id;
-        if (alive) setChat(sideChat);
-        else void client.closeSideChat(sideChat.id).catch(() => {});
+        if (alive) {
+          setChat(sideChat);
+          setTraces(sideChat.traces ?? []);
+        } else void client.closeSideChat(sideChat.id).catch(() => {});
       },
       (e: unknown) => alive && setError(e instanceof Error ? e.message : "Couldn't open a side chat"),
     );
@@ -53,10 +69,24 @@ export default function SideChatScreen() {
             ? { ...old, messages: [...old.messages.filter((m) => m.id !== event.message.id), event.message] }
             : old,
         );
-        setDeltas((d) => {
-          const { [event.message.id]: _, ...rest } = d;
-          return rest;
-        });
+        // A card shown mid-reply sends the reply early: its text keeps streaming.
+        if (event.message.status !== "streaming")
+          setDeltas((d) => {
+            const { [event.message.id]: _, ...rest } = d;
+            return rest;
+          });
+      } else if (event.type === "sidechat.trace" && event.sideChatId === id.current) {
+        const next = { trace: event.trace, steps: event.steps };
+        setTraces((old) =>
+          old.some((t) => t.trace.id === next.trace.id)
+            ? old.map((t) => (t.trace.id === next.trace.id ? next : t))
+            : [...old, next],
+        );
+      } else if (
+        (event.type === "block.created" || event.type === "block.updated") &&
+        event.block.scope === scope
+      ) {
+        setBlocks((old) => ({ ...old, [event.block.id]: event.block }));
       } else if (event.type === "message.delta" && event.scope === scope) {
         setDeltas((d) => ({ ...d, [event.messageId]: (d[event.messageId] ?? "") + event.text }));
       } else if (event.type === "agent.activity" && event.scope === scope) {
@@ -87,6 +117,11 @@ export default function SideChatScreen() {
     }
   };
 
+  const handlers = useMemo(
+    () => blockHandlers(poke, { onBlock: (block) => setBlocks((old) => ({ ...old, [block.id]: block })) }),
+    [poke],
+  );
+
   const sendToPoke = async () => {
     if (!chat) return;
     setSending(true);
@@ -103,16 +138,25 @@ export default function SideChatScreen() {
 
   const messages = chat?.messages ?? [];
   const streaming = Object.entries(deltas).filter(([mid]) => !messages.some((m) => m.id === mid));
-  const hasReply = messages.some((m) => m.role === "poke");
-  type Row = { key: string; role: "user" | "poke"; text: string };
-  const rows: Row[] = [
-    ...messages.map((m) => ({
-      key: m.id,
-      role: m.role === "user" ? ("user" as const) : ("poke" as const),
-      text: textOf(m),
-    })),
-    ...streaming.map(([key, t]) => ({ key, role: "poke" as const, text: t })),
-  ].reverse();
+  const hasReply = messages.some((m) => m.role === "poke" && textOf(m));
+  const ordered: Row[] = [];
+  for (const m of messages) {
+    if (m.role === "user") ordered.push({ key: m.id, kind: "user", text: textOf(m) });
+    else if (m.role === "system") ordered.push({ key: m.id, kind: "system", text: textOf(m) });
+    else
+      ordered.push({
+        key: m.id,
+        kind: "poke",
+        text: m.status === "streaming" ? (deltas[m.id] ?? textOf(m)) : textOf(m),
+        blocks: blockIds(m),
+      });
+    // What it did for this message goes right under it, above the reply.
+    for (const traced of traces)
+      if (traced.trace.messageId === m.id) ordered.push({ key: traced.trace.id, kind: "trace", traced });
+  }
+  for (const [key, t] of streaming) ordered.push({ key, kind: "poke", text: t, blocks: [] });
+  const rows = ordered.reverse();
+  const tracing = traces.some((t) => t.trace.status === "running");
 
   return (
     <View style={{ flex: 1, backgroundColor: c.ground }}>
@@ -156,7 +200,7 @@ export default function SideChatScreen() {
           contentContainerStyle={{ padding: 20, gap: 18 }}
           keyboardDismissMode="interactive"
           ListHeaderComponent={
-            activity !== "idle" && streaming.length === 0 ? (
+            activity !== "idle" && streaming.length === 0 && !tracing ? (
               <Shimmer size="subhead">Thinking</Shimmer>
             ) : undefined
           }
@@ -168,13 +212,36 @@ export default function SideChatScreen() {
               </Text>
             </View>
           }
-          renderItem={({ item }) =>
-            item.role === "user" ? (
-              <UserMessage text={item.text} />
-            ) : (
-              <RichText text={item.text} size="body" />
-            )
-          }
+          renderItem={({ item }) => {
+            switch (item.kind) {
+              case "user":
+                return <UserMessage text={item.text} />;
+              case "system":
+                return (
+                  <Text size="footnote" color="ink3" align="center" selectable>
+                    {item.text}
+                  </Text>
+                );
+              case "trace":
+                return <TraceView trace={item.traced.trace} steps={item.traced.steps} />;
+              case "poke":
+                return (
+                  <View style={{ gap: 12 }}>
+                    {item.text ? (
+                      <RichText
+                        text={item.text}
+                        size="body"
+                        {...(handlers.openLink ? { onLink: handlers.openLink } : {})}
+                      />
+                    ) : null}
+                    {item.blocks.map((blockId) => {
+                      const block = blocks[blockId];
+                      return block ? <BlockView key={blockId} block={block} handlers={handlers} /> : null;
+                    })}
+                  </View>
+                );
+            }
+          }}
         />
         <View style={{ paddingBottom: Math.max(insets.bottom, 12), paddingTop: 6 }}>
           <Composer

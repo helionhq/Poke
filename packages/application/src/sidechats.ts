@@ -1,6 +1,8 @@
-import { type PersonaSlots, sidechatPrompt } from "@poke/agent-core";
+import { type PersonaSlots, SILENT_TOOLS, sidechatPrompt, toolLabel } from "@poke/agent-core";
 import {
   type AgentActivity,
+  type Block,
+  type BlockOwner,
   clampBudget,
   type Clock,
   COMPACTION_INSTRUCTIONS,
@@ -14,8 +16,11 @@ import {
   PROVIDERS,
   type ProviderKind,
   type Repositories,
+  type Step,
+  type Trace,
 } from "@poke/domain";
 import { recordUsage } from "./agents.js";
+import type { BlockService } from "./blocks.js";
 import type { EventHub } from "./core/hub.js";
 import type { ModelService } from "./models.js";
 import type { SettingsService } from "./settings.js";
@@ -36,6 +41,8 @@ export interface SideChatDeps {
   persona: () => PersonaSlots;
   workspace: string;
   skillsDir: string;
+  /** Cards shown inside side chats: approvals, secret and connect requests. */
+  blocks?: Pick<BlockService, "attach" | "expire" | "attachSideChats">;
 }
 
 export interface SideChatView {
@@ -44,6 +51,13 @@ export interface SideChatView {
   messages: Message[];
   activity: AgentActivity;
   createdAt: number;
+  traces: TracedTurn[];
+}
+
+/** One reply's Trace and its steps. Like the rest of a side chat, it lives only in memory. */
+export interface TracedTurn {
+  trace: Trace;
+  steps: Step[];
 }
 
 interface SideChat {
@@ -54,9 +68,21 @@ interface SideChat {
   busy: boolean;
   activity: AgentActivity;
   createdAt: number;
+  /** The reply being written, while a turn runs: cards go under it. */
+  reply?: Message;
+  traces: TracedTurn[];
+}
+
+interface Waiter {
+  sideChatId: string;
+  resolve: (value: unknown) => void;
+  timer: ReturnType<typeof setTimeout>;
+  blockId?: string;
 }
 
 const MAX_OPEN = 5;
+/** How long a side chat tool waits for him: a secret, a connection or an OK. */
+export const SIDECHAT_WAIT_MS = 15 * 60_000;
 
 /**
  * Side chats: one agent with its own model and the executor's tools, next to the thread.
@@ -64,8 +90,11 @@ const MAX_OPEN = 5;
  */
 export class SideChatService {
   readonly #chats = new Map<string, SideChat>();
+  readonly #waiters = new Map<string, Waiter>();
 
-  constructor(private readonly deps: SideChatDeps) {}
+  constructor(private readonly deps: SideChatDeps) {
+    deps.blocks?.attachSideChats(this);
+  }
 
   open(): SideChatView {
     const assignment = this.deps.models.get("sidechat");
@@ -80,6 +109,7 @@ export class SideChatService {
       busy: false,
       activity: "idle",
       createdAt: this.deps.clock.now(),
+      traces: [],
     };
     this.#chats.set(chat.id, chat);
     return view(chat);
@@ -145,11 +175,14 @@ export class SideChatService {
     let reply: Message | undefined;
     const segments: string[] = [];
     let failure: string | undefined;
+    const asked = chat.messages.at(-1);
+    let traced: TracedTurn | undefined;
+    const steps = new Map<string, Step>();
     try {
       for await (const event of session.startTurn({ text: userText })) {
         switch (event.type) {
           case "text.delta":
-            reply ??= this.#push(chat, { ...this.#message(chat, "poke", ""), status: "streaming" });
+            reply ??= this.#startReply(chat);
             this.deps.hub.live({
               type: "message.delta",
               messageId: reply.id,
@@ -159,13 +192,31 @@ export class SideChatService {
             break;
           case "text.done":
             if (!event.text.trim()) break;
-            reply ??= this.#push(chat, { ...this.#message(chat, "poke", ""), status: "streaming" });
+            reply ??= this.#startReply(chat);
             segments.push(event.text.trim());
-            reply.parts = [{ type: "text", text: segments.join("\n\n") }];
+            // Cards shown during the turn stay under the text.
+            reply.parts = [
+              { type: "text", text: segments.join("\n\n") },
+              ...reply.parts.filter((part) => part.type !== "text"),
+            ];
             break;
-          case "tool.started":
+          case "tool.started": {
             this.#setActivity(chat, "working");
+            if (SILENT_TOOLS.has(event.name) || event.name === "ask_poke") break;
+            traced ??= this.#startTrace(chat, asked);
+            const step = this.#step(traced, event.name, event.args);
+            steps.set(event.callId, step);
+            this.#publishTrace(chat, traced);
             break;
+          }
+          case "tool.completed": {
+            const step = steps.get(event.callId);
+            if (!step || !traced) break;
+            step.status = event.isError ? "error" : "done";
+            step.endedAt = this.deps.clock.now();
+            this.#publishTrace(chat, traced);
+            break;
+          }
           case "usage":
             recordUsage(this.deps.repos, this.deps.clock.now(), "sidechat", event.usage);
             break;
@@ -178,7 +229,9 @@ export class SideChatService {
       }
     } finally {
       chat.busy = false;
+      delete chat.reply;
       this.#setActivity(chat, "idle");
+      if (traced) this.#endTrace(chat, traced, failure !== undefined);
     }
     if (reply) {
       reply.status = "complete";
@@ -190,7 +243,62 @@ export class SideChatService {
   }
 
   async cancel(id: string): Promise<void> {
-    await this.#require(id).session?.cancel();
+    const chat = this.#require(id);
+    this.#stopWaiting(id);
+    await chat.session?.cancel();
+  }
+
+  // ── cards: a side chat tool waiting on him ──────────────────────────────────────────────────
+
+  /** Shows a card in the side chat, under the reply being written (or in a message of its own). */
+  show(
+    sideChatId: string,
+    input: { kind: string; props: Record<string, unknown>; owner: BlockOwner },
+  ): Block {
+    const blocks = this.deps.blocks;
+    if (!blocks) throw new DomainError("unavailable", "Side chats can't show cards here");
+    const chat = this.#require(sideChatId);
+    const target = chat.reply ?? this.#push(chat, this.#message(chat, "poke", ""));
+    const block = blocks.attach(target, input);
+    target.updatedAt = this.deps.clock.now();
+    this.deps.hub.live({ type: "sidechat.message", sideChatId, message: target });
+    return block;
+  }
+
+  /** A secret or a connection: shows its card and waits for him. Undefined if he never answered. */
+  async ask(sideChatId: string, input: { kind: string; props: Record<string, unknown> }, needId: string) {
+    const block = this.show(sideChatId, { ...input, owner: { type: "sidechat", sideChatId, needId } });
+    return this.wait(sideChatId, needId, block.id);
+  }
+
+  /**
+   * Waits for `settle(key)`: a card answered or an approval decided. After `ms`, or when the chat
+   * is stopped or closed, it resolves undefined and the card expires.
+   */
+  wait(sideChatId: string, key: string, blockId?: string, ms = SIDECHAT_WAIT_MS): Promise<unknown> {
+    return new Promise((resolve) => {
+      const timer = setTimeout(() => this.#finishWait(key, undefined, true), ms);
+      timer.unref?.();
+      this.#waiters.set(key, { sideChatId, resolve, timer, ...(blockId ? { blockId } : {}) });
+    });
+  }
+
+  settle(key: string, value: unknown): void {
+    this.#finishWait(key, value, false);
+  }
+
+  #finishWait(key: string, value: unknown, expire: boolean): void {
+    const waiter = this.#waiters.get(key);
+    if (!waiter) return;
+    this.#waiters.delete(key);
+    clearTimeout(waiter.timer);
+    if (expire && waiter.blockId) this.deps.blocks?.expire(waiter.blockId);
+    waiter.resolve(value);
+  }
+
+  #stopWaiting(sideChatId: string): void {
+    for (const [key, waiter] of [...this.#waiters])
+      if (waiter.sideChatId === sideChatId) this.#finishWait(key, undefined, true);
   }
 
   /** "Send to Poke": the side chat writes a short summary, which goes into the main thread. */
@@ -214,6 +322,7 @@ export class SideChatService {
   async close(id: string): Promise<void> {
     const chat = this.#chats.get(id);
     if (!chat) return;
+    this.#stopWaiting(id);
     this.#chats.delete(id);
     await chat.session?.cancel().catch(() => undefined);
     await chat.session?.close();
@@ -278,6 +387,79 @@ export class SideChatService {
     return message;
   }
 
+  #startReply(chat: SideChat): Message {
+    chat.reply = this.#push(chat, { ...this.#message(chat, "poke", ""), status: "streaming" });
+    return chat.reply;
+  }
+
+  // ── traces ─────────────────────────────────────────────────────────────────────────────────
+
+  #startTrace(chat: SideChat, asked: Message | undefined): TracedTurn {
+    const traced: TracedTurn = {
+      trace: {
+        id: this.deps.ids.next("trc"),
+        scope: `sidechat:${chat.id}`,
+        messageId: asked?.id ?? "",
+        taskIds: [],
+        status: "running",
+        toolCount: 0,
+        apps: [],
+        startedAt: this.deps.clock.now(),
+      },
+      steps: [],
+    };
+    chat.traces.push(traced);
+    return traced;
+  }
+
+  #step(traced: TracedTurn, name: string, args: unknown): Step {
+    const safeArgs = JSON.parse(this.deps.gateway.interceptor.redact(JSON.stringify(args ?? {}))) as unknown;
+    const label = toolLabel(name, safeArgs);
+    const step: Step = {
+      id: this.deps.ids.next("stp"),
+      taskId: "",
+      traceId: traced.trace.id,
+      tool: name,
+      label: label.done,
+      ...(label.app ? { app: label.app } : {}),
+      status: "running",
+      startedAt: this.deps.clock.now(),
+    };
+    traced.steps.push(step);
+    const trace = traced.trace;
+    trace.toolCount += 1;
+    trace.line = label.live;
+    if (label.app) {
+      trace.lineApp = label.app;
+      if (!trace.apps.some((a) => a.id === label.app!.id)) trace.apps.push(label.app);
+    } else delete trace.lineApp;
+    return step;
+  }
+
+  #endTrace(chat: SideChat, traced: TracedTurn, failed: boolean): void {
+    const now = this.deps.clock.now();
+    const trace = traced.trace;
+    trace.status = failed ? "failed" : "done";
+    trace.endedAt = now;
+    delete trace.line;
+    delete trace.lineApp;
+    for (const step of traced.steps)
+      if (step.status === "running") {
+        step.status = failed ? "error" : "done";
+        step.endedAt = now;
+      }
+    this.#publishTrace(chat, traced);
+  }
+
+  #publishTrace(chat: SideChat, traced: TracedTurn): void {
+    this.deps.hub.live({
+      type: "sidechat.trace",
+      sideChatId: chat.id,
+      trace: { ...traced.trace, apps: [...traced.trace.apps] },
+      steps: traced.steps.map((step) => ({ ...step })),
+    });
+  }
+
   #setActivity(chat: SideChat, activity: AgentActivity): void {
     if (chat.activity === activity) return;
     chat.activity = activity;
@@ -298,5 +480,6 @@ function view(chat: SideChat): SideChatView {
     messages: [...chat.messages],
     activity: chat.activity,
     createdAt: chat.createdAt,
+    traces: chat.traces.map((t) => ({ trace: { ...t.trace }, steps: t.steps.map((s) => ({ ...s })) })),
   };
 }

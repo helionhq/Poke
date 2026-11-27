@@ -111,6 +111,7 @@ function AppDetail({ id }: { id: string }) {
       }
       loading={list.loading && !list.data}
       {...(list.error ? { error: list.error } : {})}
+      onRefresh={() => void list.reload()}
     >
       {integration ? (
         <>
@@ -221,6 +222,7 @@ function McpServerDetail({ id }: { id: string }) {
       }
       loading={servers.loading && !servers.data}
       {...(servers.error ? { error: servers.error } : {})}
+      onRefresh={() => void servers.reload()}
     >
       {server ? (
         <>

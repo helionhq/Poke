@@ -1,6 +1,8 @@
 import { Command, Option } from "commander";
 import { createContext } from "./admin.js";
+import { backupCommand, restoreCommand } from "./commands/backup.js";
 import { configCommand } from "./commands/config.js";
+import { doctorCommand } from "./commands/doctor.js";
 import { loginCommand, modelCommand } from "./commands/models.js";
 import "./commands/memory.js";
 import "./commands/notifications.js";
@@ -130,6 +132,30 @@ program
     wrap(async (opts: { ref?: string; honcho?: boolean; nightly?: boolean; apply?: string }) =>
       updateCommand(ctx, opts),
     ),
+  );
+
+program
+  .command("doctor")
+  .description("Deep checks, with a fix offered for each problem (sends a test push)")
+  .option("--fix", "run every fix without asking")
+  .option("--json", "machine-readable output")
+  .action(wrap(async (opts: { fix?: boolean; json?: boolean }) => doctorCommand(ctx, opts)));
+
+program
+  .command("backup")
+  .description("Back up the thread, vault, master key, files and memory to one archive")
+  .argument("[file]", "where to write it (default ~/poke/backups/)")
+  .option("--json", "machine-readable output")
+  .action(wrap(async (file: string | undefined, opts: { json?: boolean }) => backupCommand(ctx, file, opts)));
+
+program
+  .command("restore")
+  .description("Restore a backup (what it replaces is moved aside)")
+  .argument("<file>", "a poke backup archive")
+  .option("--yes", "don't ask first")
+  .option("--memory", "only load memory (Honcho), after setting it up on a new machine")
+  .action(
+    wrap(async (file: string, opts: { yes?: boolean; memory?: boolean }) => restoreCommand(ctx, file, opts)),
   );
 
 program

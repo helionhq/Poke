@@ -31,7 +31,12 @@ export interface LoginInfo {
   name: string;
   providers: string[];
   loggedIn: boolean;
+  /** When the credential stops working, where that is known (a claude setup-token lasts a year). */
+  expiresAt?: number;
 }
+
+/** `claude setup-token` makes a token that lasts about a year (brief section 3). */
+export const CLAUDE_TOKEN_LIFETIME_MS = 365 * 86_400_000;
 
 /** Checks a credential against its service before it is saved. */
 export type LoginValidator = (secret: string) => Promise<{ ok: true } | { ok: false; error: string }>;
@@ -53,6 +58,9 @@ export class LoginService {
         providers: [],
         loggedIn: this.secrets.has(key),
       };
+      const setAt = provider.loginId === "anthropic" ? this.secrets.updatedAt?.(key) : undefined;
+      if (setAt !== undefined && entry.expiresAt === undefined)
+        entry.expiresAt = setAt + CLAUDE_TOKEN_LIFETIME_MS;
       entry.providers.push(provider.id);
       byLogin.set(provider.loginId, entry);
     }

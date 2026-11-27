@@ -451,3 +451,27 @@ SideStore ─ GET /sidestore/<token>/source.json ─► sideStoreSource(UpdateSt
 | `GET /sidestore/:token/:file` | path token | an IPA |
 | `GET /admin/updates` | admin | source URL and native builds (`poke status`) |
 | `POST /admin/tunnel/prepare` | admin | render cloudflared.env from the vault |
+
+## Polish (milestone 12)
+
+```
+side chat turn ─ tool.started / tool.completed ─► SideChatService ─► live sidechat.trace {trace, steps}
+               ─ ask_poke (secret | connection) ─► SideChatService.ask ─► BlockService.attach (owner sidechat)
+               │                                     └─ waits ◄─ block action ─► settle(needId)
+               ─ Executor-gated call ─► ApprovalService.gate ─► card in the chat (owner approval)
+                                                     └─ waits ◄─ decide() ─► settle(approvalId)
+```
+
+- Side chats keep their Traces in memory with the rest of the chat; `GET /v1/sidechats/:id`
+  includes them and `sidechat.trace` events update them. Steps use the executors' labels.
+- A side chat tool that needs him waits inside the call (`SideChatService.wait`, 15 minutes)
+  instead of parking: the chat lives in memory, so there's nothing to resume after a restart.
+  Cards go under the reply being written, or in a message of their own. Closing or stopping the
+  chat resolves every wait and expires its cards.
+- `poke doctor` (apps/cli/commands/doctor.ts) runs the preflight and then its own checks; each
+  returns `{group, label, status, detail, fix}`, where a fix is either a function (`--fix`) or a
+  command to print.
+- Backups (server/infra/backup.ts): `createBackup` stages SQLite snapshots (`VACUUM INTO`) and
+  copies, adds `manifest.json` (format 1) and tars it; `restoreBackup` unpacks into a staging
+  folder under `~/poke/run`, checks the manifest, moves the current files aside and copies the
+  backup in. The CLI adds Honcho's `pg_dump` / `pg_restore` through `docker compose exec`.

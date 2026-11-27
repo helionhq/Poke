@@ -26,6 +26,7 @@ export {
   LoginService,
   ModelService,
   LOGIN_SECRETS,
+  CLAUDE_TOKEN_LIFETIME_MS,
   parseRole,
   isLlmRole,
   type LoginInfo,

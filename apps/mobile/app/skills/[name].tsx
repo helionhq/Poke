@@ -47,6 +47,7 @@ export default function SkillScreen() {
       {...(skill ? { title: skill.name, subtitle: skill.description } : {})}
       loading={detail.loading && !detail.data}
       {...(detail.error ? { error: detail.error } : {})}
+      onRefresh={() => void detail.reload()}
     >
       {skill ? (
         <>

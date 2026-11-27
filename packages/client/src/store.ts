@@ -257,6 +257,8 @@ export class ThreadStore {
       case "block.created":
       case "block.updated":
         if (event.block.scope === this.scope) this.#blocks.set(event.block.id, event.block);
+        // A side chat's cards: its screen keeps them.
+        else this.onOther?.(event);
         return;
       case "trace.created":
       case "trace.updated":

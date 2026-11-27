@@ -372,6 +372,7 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     memory,
     routines,
     skills,
+    sideChats: () => sidechats,
   });
   const notifications = new NotificationService({
     repos: kernel.db,
@@ -404,7 +405,9 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
     persona,
     workspace: paths.workspace,
     skillsDir: paths.skills,
+    blocks,
   });
+  approvals.attachSideChats(sidechats);
   // One-time codes are wiped 10 minutes after they were saved, used or not.
   let sweeper: { cancel(): void } | undefined;
   const sweep = () => {
@@ -474,7 +477,14 @@ export async function openAgentStack(kernel: Kernel, options: AgentStackOptions 
 /** `poke status`: logins, and Poke's live context when the agents are running. */
 export function stackStatus(stack: ModelStack | AgentStack): StatusContributor {
   return async (report) => {
-    report.sections.logins = stack.logins.list().map((l) => ({ id: l.id, name: l.name, ok: l.loggedIn }));
+    report.sections.logins = stack.logins.list().map((l) => ({
+      id: l.id,
+      name: l.name,
+      ok: l.loggedIn,
+      ...(l.loggedIn && l.expiresAt
+        ? { note: `logged in · token expires ${new Date(l.expiresAt).toDateString()}` }
+        : {}),
+    }));
     if ("poke" in stack) {
       report.sections.memory = {
         on: stack.memory.available(),

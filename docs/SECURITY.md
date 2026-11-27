@@ -263,3 +263,21 @@ redacted before they are stored.
 - **The Live Activity** shows the task name and step line on the Lock Screen, visible without
   unlocking. Step lines are already redacted (no vault values). It needs no App Group, so no data
   is shared with the extension outside ActivityKit's content updates.
+
+## Doctor, backups and side chat cards (milestone 12)
+
+- **A backup holds the master key** next to the encrypted vault, so the archive is as sensitive as
+  the vault itself. It is written 0600 into `~/poke/backups` (0700); the command says so every
+  time. It isn't encrypted again: a passphrase would be one more secret to keep with the file.
+  Logs, caches and app updates are left out.
+- **Restore never deletes.** What it replaces goes to `~/poke/restore-previous-<time>/` (the
+  master key keeps 0600, `keys` 0700). Archive paths are checked: none may be absolute or contain
+  `..`. A file that isn't a Poke backup is refused before anything is moved.
+- **Doctor** reads only whether secrets exist and when they were saved, never their values. Its
+  Bark check sends a fixed test push through the server; its tunnel check asks the public URL for
+  `/v1/health`, which needs no token and returns no data.
+- **Side chat cards** use the same block API as the thread. A secret typed into a side chat's card
+  goes straight into the vault; the side chat gets only the placeholder. Its approvals come only
+  from Executor-gated calls, are logged like any other, and can't be decided by the side chat
+  itself. Side chat Trace step labels are redacted like executors'. Closing the chat, or a server
+  restart, expires anything still waiting.

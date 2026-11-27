@@ -1,26 +1,55 @@
-import { traceLine, traceSummary } from "@poke/client";
+import { type Step as StepData, type Trace as TraceData, traceLine, traceSummary } from "@poke/client";
 import { Logo, Step, Trace } from "@poke/ui-native";
 import { useState } from "react";
 import { usePoke, useThread } from "../lib/poke";
 
 /**
- * A reply's tool activity. Running: one live line with the current tool's mark. Done: "Used 3
- * tools · …", which expands into the calls in order (fetched the first time it opens).
+ * A reply's tool activity in the thread. Its steps are fetched the first time it opens.
  */
 export function TraceRow({ traceId }: { traceId: string }) {
   const store = useThread();
   const { client } = usePoke();
-  const [open, setOpen] = useState(false);
   const trace = store.trace(traceId);
   if (!trace) return null;
-  const steps = store.steps(traceId);
+  return (
+    <TraceView
+      trace={trace}
+      steps={store.steps(traceId)}
+      {...(store.liveLine(traceId) ? { liveLine: store.liveLine(traceId)! } : {})}
+      onFirstOpen={() =>
+        void client.trace(traceId).then(
+          (detail) => store.setSteps(traceId, detail.steps, detail.tasks),
+          () => {},
+        )
+      }
+    />
+  );
+}
+
+/**
+ * Running: one live line with the current tool's mark. Done: "Used 3 tools · …", which expands
+ * into the calls in order. Side chats draw theirs with it too, from the steps they already have.
+ */
+export function TraceView({
+  trace,
+  steps,
+  liveLine,
+  onFirstOpen,
+}: {
+  trace: TraceData;
+  steps: readonly StepData[];
+  liveLine?: string;
+  /** Called when it opens with no steps yet. */
+  onFirstOpen?: () => void;
+}) {
+  const [open, setOpen] = useState(false);
   if (trace.status === "running") {
     const running = [...steps].reverse().find((s) => s.status === "running");
     const app = running?.app ?? trace.lineApp;
     return (
       <Trace
         state="running"
-        title={traceLine(trace, steps, store.liveLine(traceId))}
+        title={traceLine(trace, steps, liveLine)}
         {...(app
           ? {
               mark: (
@@ -37,12 +66,7 @@ export function TraceRow({ traceId }: { traceId: string }) {
   }
   const { title, meta } = traceSummary(trace);
   const toggle = () => {
-    if (!open && steps.length === 0) {
-      void client.trace(traceId).then(
-        (detail) => store.setSteps(traceId, detail.steps, detail.tasks),
-        () => {},
-      );
-    }
+    if (!open && steps.length === 0) onFirstOpen?.();
     setOpen(!open);
   };
   return (

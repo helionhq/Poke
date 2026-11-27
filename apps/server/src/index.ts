@@ -35,5 +35,12 @@ export {
   restoreDatabase,
 } from "./infra/maintenance.js";
 export { repoRoot } from "./infra/honcho-deploy.js";
+export {
+  type BackupManifest,
+  createBackup,
+  extractHonchoDump,
+  readBackupManifest,
+  restoreBackup,
+} from "./infra/backup.js";
 export { runClaudeSetupToken } from "@poke/runtime-claude-agent-sdk";
 export { buildStatus, registerStatus, type StatusReport, type StatusContributor } from "./status.js";

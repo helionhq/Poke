@@ -1,4 +1,4 @@
-import { Icon, IconButton, Text, useColors } from "@poke/ui-native";
+import { Button, Icon, IconButton, Text, useColors } from "@poke/ui-native";
 import { router } from "expo-router";
 import type { ReactNode } from "react";
 import { ActivityIndicator, RefreshControl, ScrollView, View, type ScrollViewProps } from "react-native";
@@ -98,6 +98,15 @@ export function Screen({
             <Text size="subhead" color="ink2">
               {error}
             </Text>
+            {onRefresh ? (
+              <Button
+                tone="fill"
+                size="small"
+                label="Try again"
+                onPress={onRefresh}
+                style={{ alignSelf: "flex-start", marginTop: 10 }}
+              />
+            ) : null}
           </View>
         ) : null}
         {loading ? <ActivityIndicator style={{ marginTop: 24 }} color={c.ink3} /> : children}
@@ -115,8 +124,16 @@ export function Footnote({ children }: { children: ReactNode }) {
   );
 }
 
-/** Centered note when a list is empty. */
-export function Empty({ title, body }: { title: string; body?: string }) {
+/** Centered note when a list is empty, or couldn't load (with a way to try again). */
+export function Empty({
+  title,
+  body,
+  action,
+}: {
+  title: string;
+  body?: string;
+  action?: { label: string; onPress: () => void };
+}) {
   return (
     <View style={{ alignItems: "center", paddingHorizontal: 40, paddingVertical: 32, gap: 6 }}>
       <Text size="callout" weight="semibold" align="center">
@@ -126,6 +143,15 @@ export function Empty({ title, body }: { title: string; body?: string }) {
         <Text size="subhead" color="ink2" align="center">
           {body}
         </Text>
+      ) : null}
+      {action ? (
+        <Button
+          tone="fill"
+          size="small"
+          label={action.label}
+          onPress={action.onPress}
+          style={{ marginTop: 8 }}
+        />
       ) : null}
     </View>
   );

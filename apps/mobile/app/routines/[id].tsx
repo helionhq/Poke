@@ -80,6 +80,7 @@ export default function RoutineScreen() {
       {...(routine ? { title: routine.title, subtitle: routine.scheduleText } : {})}
       loading={detail.loading && !detail.data}
       {...(detail.error ? { error: detail.error } : {})}
+      onRefresh={() => void detail.reload()}
     >
       {routine ? (
         <>

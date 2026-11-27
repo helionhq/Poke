@@ -61,6 +61,8 @@ export const BlockOwner = z.discriminatedUnion("type", [
   z.object({ type: z.literal("poke") }),
   z.object({ type: z.literal("task"), taskId: z.string(), needId: z.string() }),
   z.object({ type: z.literal("approval"), approvalId: z.string(), taskId: z.string().optional() }),
+  // A side chat tool waiting on him (a secret or a connection).
+  z.object({ type: z.literal("sidechat"), sideChatId: z.string(), needId: z.string() }),
 ]);
 
 export const Block = z.object({

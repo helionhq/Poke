@@ -55,6 +55,8 @@ export interface SystemSecrets {
   delete(key: SystemSecretKey): void;
   has(key: SystemSecretKey): boolean;
   keys(): SystemSecretKey[];
+  /** When the value was last set (ms), if the store keeps it. */
+  updatedAt?(key: SystemSecretKey): number | undefined;
 }
 
 export interface SearchResultItem {

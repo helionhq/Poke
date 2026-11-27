@@ -15,9 +15,27 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 9 | iOS app: tokens/components from Doop, every screen, offline cache, deep links, share | ✅ done |
 | 10 | Voice: dictation, read aloud, call mode | ✅ done |
 | 11 | Live Activity, OTA updates, release pipeline, setup docs | ✅ done |
-| 12 | Polish pass | ⏳ next |
+| 12 | Polish pass | ✅ done |
 
 ## Log
+### Milestone 12 — polish pass
+- `poke doctor`: every check grouped (machine, Poke, logins, models, Docker, memory, tunnel,
+  notifications, updates, backup), with the fix for each; `--fix` runs the ones it can, `--json`
+  for scripts. The Claude token's expiry (save date plus a year) shows in doctor and `poke status`.
+- `poke backup` and `poke restore`: one archive with consistent SQLite snapshots, the master key,
+  his files, skills, settings, Bark's data and Honcho's database; restore moves what it replaces
+  aside and reloads Honcho. Checked here end to end (backup) and in tests (round trip, a bad file).
+- Side chats show what they did as a Trace under his message, and show cards: secret and connect
+  requests (`ask_poke`) and Executor approvals, each waiting in the chat. Closing or stopping the
+  chat expires what's waiting. This was the one gap left from milestone 9's side chat.
+- Error states: the management screens, Library, Voices and Settings › Devices offer Try again;
+  the Library shows a spinner while it loads instead of a blank screen.
+- Not checked here: a screen-by-screen visual comparison with the Doop canvas on a phone (needs
+  the app running on an iPhone; there's no simulator on Windows), `poke doctor --fix` and
+  `poke restore` on the Ubuntu machine with Docker, and Honcho's dump and restore.
+- Tests: 233 Vitest (new: side chat Trace and cards, expiry on close, backup round trip, doctor's
+  token expiry and private files) and 21 Jest.
+
 
 ### Milestone 1 — scaffold
 - pnpm workspaces + Turborepo; strict TS 6; ESLint (typescript-eslint, prettier); vitest at the root.
@@ -260,7 +278,7 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
   as a small file.
 - Docs: IOS.md rewritten, SHARE_SHORTCUT.md (the Shortcut, step by step).
 - Not yet: side chats render text only (the server's side chats reply in text; traces and blocks
-  inside them come with the polish pass); voice audio (milestone 10); Live Activity and OTA
+  inside them come with the polish pass, done in milestone 12); voice audio (milestone 10); Live Activity and OTA
   (milestone 11).
 - To verify on a phone (needs a Mac build): Face ID keys across SideStore refreshes, signing
   speed, the scanner module, Liquid Glass on iOS 26, and the Shortcut. `expo export` bundles the

@@ -37,7 +37,8 @@ export type LiveEvent =
   | { type: "agent.activity"; scope: string; activity: AgentActivity }
   | { type: "task.progress"; taskId: string; traceId: string; text: string }
   | { type: "sidechat.message"; sideChatId: string; message: Message }
-  | { type: "sidechat.closed"; sideChatId: string };
+  | { type: "sidechat.closed"; sideChatId: string }
+  | { type: "sidechat.trace"; sideChatId: string; trace: Trace; steps: Step[] };
 
 export type DomainEvent = PersistedEvent | LiveEvent;
 

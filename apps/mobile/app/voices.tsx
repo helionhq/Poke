@@ -52,7 +52,11 @@ export default function VoicesScreen() {
       {info.data ? (
         <Footnote>You'll hear the new voice the next time Poke reads aloud or picks up a call.</Footnote>
       ) : info.error ? (
-        <Empty title="Couldn’t load the voices" body={info.error} />
+        <Empty
+          title="Couldn’t load the voices"
+          body={info.error}
+          action={{ label: "Try again", onPress: () => void info.reload() }}
+        />
       ) : null}
     </Screen>
   );

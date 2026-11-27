@@ -136,6 +136,15 @@ export default function SettingsScreen() {
             />
           );
         })}
+        {devices.error && !devices.data ? (
+          <ListRow
+            tile="none"
+            title="Couldn't load your devices"
+            subtitle={`${devices.error}. Tap to try again.`}
+            accessory="none"
+            onPress={() => void devices.reload()}
+          />
+        ) : null}
       </ListGroup>
 
       <ListGroup>

@@ -1,6 +1,8 @@
 import { createHash } from "node:crypto";
 import {
+  type AgentRef,
   type ApprovalPresentation,
+  type BlockOwner,
   type ApprovalRequest,
   type ApprovalRule,
   type Clock,
@@ -48,6 +50,25 @@ export interface ApprovalOutcome {
   executionId?: string;
 }
 
+/** What a side chat offers a gated call: a card in the chat, and a wait for the decision. */
+export interface SideChatCards {
+  show(
+    sideChatId: string,
+    input: { kind: string; props: Record<string, unknown>; owner: BlockOwner },
+  ): { id: string };
+  wait(sideChatId: string, key: string, blockId?: string): Promise<unknown>;
+  settle(key: string, value: unknown): void;
+}
+
+/** Whose edited drafts go through once without a second OK: a task, or a side chat. */
+export function approvalKey(agent: AgentRef): string | undefined {
+  return agent.kind === "executor"
+    ? agent.taskId
+    : agent.kind === "sidechat"
+      ? `sidechat:${agent.sideChatId}`
+      : undefined;
+}
+
 export interface ApprovalsDeps {
   repos: Repositories;
   ids: IdGenerator;
@@ -68,11 +89,20 @@ export interface ApprovalsDeps {
 export class ApprovalService implements ApprovalDecider {
   #edited: Array<{ taskId: string; integration: string; tool: string; values: string[]; until: number }> = [];
 
+  #sideChats: SideChatCards | undefined;
+
   constructor(private readonly deps: ApprovalsDeps) {}
+
+  /** Side chats show their approvals in the chat itself (set once they exist). */
+  attachSideChats(sideChats: SideChatCards): void {
+    this.#sideChats = sideChats;
+  }
 
   /** Expire requests nobody waits on (after a restart, or when their task ends). */
   start(): void {
     for (const request of this.deps.repos.approvals.pending()) {
+      // Side chats don't outlive the server.
+      if (request.requester.kind === "sidechat") this.#expire(request);
       if (request.requester.kind !== "task") continue;
       const task = this.deps.repos.tasks.get(request.requester.taskId);
       const need = task?.need;
@@ -118,12 +148,14 @@ export class ApprovalService implements ApprovalDecider {
       });
     }
     if (!input) throw new DomainError("invalid", "Nothing to approve");
-    if (ctx.agent.kind !== "executor")
-      throw new DomainError("unavailable", "Only agents can run tools that need an OK");
-    const taskId = ctx.agent.taskId;
-    const needId = `need_${taskId}_${ctx.callId}`.replace(/[^A-Za-z0-9_]/g, "_");
-    const task = this.deps.repos.tasks.get(taskId);
-    if (task?.need?.id === needId) return { output: [], park: { needId } }; // a replayed call
+    const agent = ctx.agent;
+    const key = approvalKey(agent);
+    if (agent.kind === "poke" || !key)
+      throw new DomainError("unavailable", "Only agents and side chats can run tools that need an OK");
+    const taskId = agent.kind === "executor" ? agent.taskId : undefined;
+    const needId = `need_${taskId ?? key}_${ctx.callId}`.replace(/[^A-Za-z0-9_]/g, "_");
+    if (taskId && this.deps.repos.tasks.get(taskId)?.need?.id === needId)
+      return { output: [], park: { needId } }; // a replayed call
 
     const now = this.deps.clock.now();
     const args = this.deps.redact(input.args);
@@ -137,13 +169,16 @@ export class ApprovalService implements ApprovalDecider {
       args,
       argsHash: argsHash(input.args),
       resume: input.resume,
-      requester: { kind: "task", taskId },
+      requester:
+        agent.kind === "executor"
+          ? { kind: "task", taskId: agent.taskId }
+          : { kind: "sidechat", sideChatId: agent.sideChatId },
       status: "pending",
       ...(input.presentation ? { presentation: input.presentation } : {}),
       ...(input.offer ? { offer: input.offer } : {}),
       createdAt: now,
     };
-    if (this.#takeEdited(taskId, input)) {
+    if (this.#takeEdited(key, input)) {
       request.status = "allowed";
       request.decidedAt = now;
       this.deps.repos.approvals.save(request);
@@ -165,8 +200,29 @@ export class ApprovalService implements ApprovalDecider {
       });
     }
     this.deps.repos.approvals.save(request);
-    this.deps.agents.ask(taskId, { kind: "approval", approvalId: request.id }, needId);
+    if (agent.kind === "sidechat") return this.#inSideChat(agent.sideChatId, request, run);
+    this.deps.agents.ask(agent.taskId, { kind: "approval", approvalId: request.id }, needId);
     return { output: [], park: { needId } };
+  }
+
+  /** A side chat waits in its tool call: the card goes in the chat, the decision settles the wait. */
+  async #inSideChat(
+    sideChatId: string,
+    request: ApprovalRequest,
+    run: (outcome: ApprovalOutcome) => Promise<ToolResultData> | ToolResultData,
+  ): Promise<ToolResultData> {
+    const sideChats = this.#sideChats;
+    if (!sideChats) throw new DomainError("unavailable", "Side chats can't ask for an OK here");
+    const block = sideChats.show(sideChatId, {
+      ...approvalBlock(request),
+      owner: { type: "approval", approvalId: request.id },
+    });
+    const outcome = (await sideChats.wait(sideChatId, request.id, block.id)) as ApprovalOutcome | undefined;
+    if (!outcome) {
+      if (this.deps.repos.approvals.get(request.id)?.status === "pending") this.#expire(request);
+      return text("No decision came in time. Don't retry it; report what's blocked.", true);
+    }
+    return run({ ...outcome, executionId: request.resume.executionId });
   }
 
   /**
@@ -227,6 +283,16 @@ export class ApprovalService implements ApprovalDecider {
     }
     this.deps.repos.approvals.save(request);
     this.#log(request);
+    if (request.requester.kind === "sidechat") {
+      this.#sideChats?.settle(approvalId, {
+        allowed: decision.allowed,
+        approvalId,
+        ...(request.ruleId ? { ruleId: request.ruleId } : {}),
+        ...(decision.note ? { note: decision.note } : {}),
+        ...(decision.final ? { final: decision.final } : {}),
+      } satisfies ApprovalOutcome);
+      return;
+    }
     if (request.requester.kind !== "task") return;
     const task = this.deps.repos.tasks.get(request.requester.taskId);
     const need = task?.need;

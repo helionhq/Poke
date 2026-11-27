@@ -41,7 +41,13 @@ export function markResolver(client: PokeClient): MarkResolver {
 }
 
 /** What blocks in the thread can do: every action goes to the server, with a haptic. */
-export function blockHandlers(poke: Poke, ui: { writeOwn?: (block: Block) => void } = {}): BlockHandlers {
+export function blockHandlers(
+  poke: Poke,
+  ui: {
+    writeOwn?: (block: Block) => void;
+    /** A card outside the thread changed (a side chat's). */ onBlock?: (block: Block) => void;
+  } = {},
+): BlockHandlers {
   const { client, store } = poke;
   const headers = client.authHeaders();
   return {
@@ -53,7 +59,8 @@ export function blockHandlers(poke: Poke, ui: { writeOwn?: (block: Block) => voi
           ...(payload ? { payload } : {}),
           clientActionId: newClientMessageId(),
         });
-        store.putBlock(res.block);
+        if (res.block.scope === "main") store.putBlock(res.block);
+        else ui.onBlock?.(res.block);
         const url = typeof res.result?.url === "string" ? res.result.url : undefined;
         if (url) {
           // The sign-in page; the block turns "connected" by itself when it finishes.

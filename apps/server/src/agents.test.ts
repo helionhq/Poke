@@ -380,6 +380,7 @@ let skills: SkillService;
 let routines: RoutineService;
 let notifier: FakeNotifier;
 let notifications: NotificationService;
+let sideChats: SideChatService | undefined;
 
 beforeEach(() => {
   home = mkdtempSync(join(tmpdir(), "poke-agents-"));
@@ -509,7 +510,9 @@ beforeEach(() => {
     memory,
     routines,
     skills,
+    sideChats: () => sideChats,
   });
+  sideChats = undefined;
   notifier = new FakeNotifier();
   notifications = new NotificationService({
     repos: kernel.db,
@@ -1840,6 +1843,174 @@ describe("side chats", () => {
     await chats.close(chat.id);
     expect(pi.sessions[0]!.closed).toBe(true);
     expect(() => chats.get(chat.id)).toThrow(/closed/);
+  });
+
+  it("shows its work as a Trace and asks for secrets and OKs with cards in the chat", async () => {
+    const chats = new SideChatService({
+      repos: kernel.db,
+      hub: kernel.hub,
+      ids: kernel.ids,
+      clock: { now: () => now },
+      log: silentLogger,
+      thread: kernel.thread,
+      settings: kernel.settings,
+      models,
+      runtimes: { "claude-agent-sdk": claude, "pi-ai": pi },
+      gateway,
+      persona: () => ({ userName: "Arham", timezone: "Europe/Lisbon", workspace: "/w" }),
+      workspace: "/w",
+      skillsDir: "/s",
+      blocks,
+    });
+    sideChats = chats;
+    approvals.attachSideChats(chats);
+    gateway.register(
+      {
+        spec: {
+          name: "northwind_refund",
+          description: "refund",
+          inputSchema: { type: "object" },
+          loading: "always",
+          callers: ["model"],
+          replay: "unsafe",
+        },
+        parse: (args) => args as Record<string, unknown>,
+        run: (args: Record<string, unknown>, ctx: ToolCallContext) =>
+          approvals.gate(
+            ctx,
+            {
+              integration: "northwind",
+              tool: "refund",
+              title: "Refund $84.00 to Maya Chen",
+              args,
+              resume: { executionId: `ex_${ctx.callId}`, source: "executor" },
+            },
+            (outcome) => text(outcome.allowed ? "Refunded." : "Not refunded."),
+          ),
+      },
+      ["sidechat"],
+    );
+    await models.set({ role: "sidechat", provider: "qwen-token-plan-individual", model: "qwen3.8-max" });
+    const chat = chats.open();
+    const results: string[] = [];
+    pi.script = async (_input, session) => {
+      const ctx = (callId: string) => ({
+        agent: { kind: "sidechat" as const, sideChatId: chat.id },
+        callId,
+        signal: new AbortController().signal,
+      });
+      const call = async (name: string, args: Record<string, unknown>, callId: string) => {
+        const started: RuntimeEvent = { type: "tool.started", callId, name, args };
+        // The fake runtime yields events only after the script returns, so the service sees the
+        // tool start when the turn's events are replayed; the card itself is shown during the call.
+        const out = await session.spec.invoker.invoke(name, args, ctx(callId));
+        const first = out.output[0];
+        results.push(first?.type === "text" ? first.text : "");
+        return [
+          started,
+          { type: "tool.completed", callId, name, isError: out.isError === true } as RuntimeEvent,
+        ];
+      };
+      const secret = await call(
+        "ask_poke",
+        {
+          kind: "secret",
+          service: "Northwind",
+          vaultName: "northwind",
+          reason: "to sign in",
+          secret: { label: "API key", type: "api_key" },
+        },
+        "a1",
+      );
+      const refund = await call("northwind_refund", { order: "A-1", amount: 84 }, "r1");
+      return [...secret, ...refund, ...reply("Refunded Maya.")];
+    };
+    const answered = chats.send(chat.id, { text: "refund maya" });
+
+    // The secret card shows in the side chat, not the thread.
+    const secretCard = await until(() => kernel.db.blocks.pending().find((b) => b.kind === "secret_request"));
+    expect(secretCard).toMatchObject({
+      scope: `sidechat:${chat.id}`,
+      owner: { type: "sidechat", sideChatId: chat.id },
+    });
+    expect(chats.get(chat.id).messages.at(-1)!.parts).toContainEqual({
+      type: "block",
+      blockId: secretCard.id,
+    });
+    await blocks.act(secretCard.id, {
+      clientActionId: "sc1",
+      action: "save",
+      payload: { value: "nw_live_123" },
+    });
+    await until(() => results.length === 1);
+    expect(results[0]).toContain("{{vault:northwind");
+
+    // The gated call waits for his OK in the chat.
+    const okCard = await until(() => kernel.db.blocks.pending().find((b) => b.owner.type === "approval"));
+    expect(okCard.scope).toBe(`sidechat:${chat.id}`);
+    const request = kernel.db.approvals.pending()[0]!;
+    expect(request.requester).toEqual({ kind: "sidechat", sideChatId: chat.id });
+    await approvals.decide(request.id, { allowed: true });
+    const message = await answered;
+    expect(results[1]).toBe("Refunded.");
+    expect(messageText(message!)).toBe("Refunded Maya.");
+
+    // One Trace for the reply, with the refund as a step (asking him isn't one).
+    const view = chats.get(chat.id);
+    expect(view.traces).toHaveLength(1);
+    expect(view.traces[0]!.trace).toMatchObject({
+      scope: `sidechat:${chat.id}`,
+      status: "done",
+      toolCount: 1,
+    });
+    expect(view.traces[0]!.steps.map((step) => [step.tool, step.status])).toEqual([
+      ["northwind_refund", "done"],
+    ]);
+    expect(live.some((e) => e.type === "sidechat.trace")).toBe(true);
+    // Nothing reached the thread.
+    expect(kernel.db.messages.recent(10)).toHaveLength(0);
+  });
+
+  it("expires a waiting card when the side chat closes", async () => {
+    const chats = new SideChatService({
+      repos: kernel.db,
+      hub: kernel.hub,
+      ids: kernel.ids,
+      clock: { now: () => now },
+      log: silentLogger,
+      thread: kernel.thread,
+      settings: kernel.settings,
+      models,
+      runtimes: { "claude-agent-sdk": claude, "pi-ai": pi },
+      gateway,
+      persona: () => ({ userName: "Arham", timezone: "Europe/Lisbon", workspace: "/w" }),
+      workspace: "/w",
+      skillsDir: "/s",
+      blocks,
+    });
+    sideChats = chats;
+    await models.set({ role: "sidechat", provider: "qwen-token-plan-individual", model: "qwen3.8-max" });
+    const chat = chats.open();
+    let result = "";
+    pi.script = async (_input, session) => {
+      const out = await session.spec.invoker.invoke(
+        "ask_poke",
+        { kind: "connection", app: "notion", appName: "Notion", reason: "to read the doc" },
+        {
+          agent: { kind: "sidechat", sideChatId: chat.id },
+          callId: "c1",
+          signal: new AbortController().signal,
+        },
+      );
+      result = out.output[0]?.type === "text" ? out.output[0].text : "";
+      return reply("ok");
+    };
+    void chats.send(chat.id, { text: "read my notion doc" });
+    const card = await until(() => kernel.db.blocks.pending().find((b) => b.kind === "connect_request"));
+    await chats.close(chat.id);
+    await until(() => result);
+    expect(result).toMatch(/No answer came in time/);
+    await until(() => kernel.db.blocks.get(card.id)?.state === "expired");
   });
 });
 

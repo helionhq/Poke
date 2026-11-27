@@ -5,7 +5,16 @@ import { Image } from "expo-image";
 import { router } from "expo-router";
 import * as Sharing from "expo-sharing";
 import { useEffect, useState } from "react";
-import { Alert, Modal, Pressable, ScrollView, TextInput, View, useWindowDimensions } from "react-native";
+import {
+  ActivityIndicator,
+  Alert,
+  Modal,
+  Pressable,
+  ScrollView,
+  TextInput,
+  View,
+  useWindowDimensions,
+} from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { usePoke, useRemote } from "../src/lib/poke";
 import { Empty, Screen } from "../src/ui/Screen";
@@ -93,8 +102,15 @@ function Attachments({ filter, query }: { filter: Exclude<Tab, "workspace">; que
   const tile = (width - 32 - 8) / 3;
   const headers = client.authHeaders();
 
-  if (list.loading && !list.data) return null;
-  if (list.error) return <Empty title="Couldn't load the library" body={list.error} />;
+  if (list.loading && !list.data) return <ActivityIndicator style={{ marginTop: 24 }} color={c.ink3} />;
+  if (list.error)
+    return (
+      <Empty
+        title="Couldn't load the library"
+        body={list.error}
+        action={{ label: "Try again", onPress: () => void list.reload() }}
+      />
+    );
   if (items.length === 0)
     return (
       <Empty
@@ -240,7 +256,13 @@ function Workspace() {
           ))}
         </ScrollView>
       ) : null}
-      {listing.error ? <Empty title="Couldn't open that folder" body={listing.error} /> : null}
+      {listing.error ? (
+        <Empty
+          title="Couldn't open that folder"
+          body={listing.error}
+          action={{ label: "Try again", onPress: () => void listing.reload() }}
+        />
+      ) : null}
       {listing.data && entries.length === 0 ? <Empty title="Empty folder" /> : null}
       {entries.length > 0 ? (
         <ListGroup footer={path ? undefined : "Where Poke's agents keep their work. Tap a file to share it."}>

@@ -431,6 +431,8 @@ export interface SideChatView {
   messages: Message[];
   activity: "idle" | "thinking" | "working";
   createdAt: number;
+  /** What it did on each reply, oldest first. */
+  traces?: Array<{ trace: Trace; steps: Step[] }>;
 }
 
 export type VaultAction = "list" | "add" | "edit" | "delete" | "reveal";

@@ -145,12 +145,18 @@ export function secretPlaceholder(props: Pick<SecretRequestProps, "vaultName" | 
 export class BlockService {
   readonly #listeners = new Set<(notice: BlockActionNotice) => void>();
   readonly #locks = new Map<string, Promise<unknown>>();
+  #sideChats: { settle(key: string, value: unknown): void } | undefined;
 
   constructor(private readonly deps: BlocksDeps) {}
 
   /** Expire blocks whose agents stopped waiting while the server was down, and follow task ends. */
   start(): void {
     for (const block of this.deps.repos.blocks.pending()) {
+      // Side chats don't outlive the server: nothing waits on their cards any more.
+      if (block.scope.startsWith("sidechat:")) {
+        this.#expire(block);
+        continue;
+      }
       if (block.owner.type !== "task") continue;
       const task = this.deps.repos.tasks.get(block.owner.taskId);
       if (!task || task.need?.id !== block.owner.needId) this.#expire(block);
@@ -212,8 +218,20 @@ export class BlockService {
       this.deps.repos.blocks.save(block);
       return [{ type: "block.created", block }];
     });
-    this.deps.thread.saveMessage(message, "updated");
+    // Side chat messages live only in memory; the side chat publishes the change itself.
+    if (!message.scope.startsWith("sidechat:")) this.deps.thread.saveMessage(message, "updated");
     return block;
+  }
+
+  /** Where side chat blocks report back (set once the side chats exist). */
+  attachSideChats(sideChats: { settle(key: string, value: unknown): void }): void {
+    this.#sideChats = sideChats;
+  }
+
+  /** Ends a block nobody can answer any more (a side chat closed or stopped waiting). */
+  expire(id: string): void {
+    const block = this.deps.repos.blocks.get(id);
+    if (block) this.#expire(block);
   }
 
   /** An action from the app. */
@@ -369,6 +387,11 @@ export class BlockService {
       return;
     }
     const owner = block.owner;
+    if (owner.type === "sidechat") {
+      const value = needValue(block);
+      if (value) this.#sideChats?.settle(owner.needId, value);
+      return;
+    }
     if (owner.type === "task") {
       const value = needValue(block);
       if (!value) return;

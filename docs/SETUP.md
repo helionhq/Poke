@@ -114,6 +114,8 @@ services have `restart: unless-stopped`.
 | `poke start` / `stop` / `restart [service]` | Everything, or one: `poke`, `honcho`, `memory`, `bark`, `tunnel`, or a Docker service name |
 | `poke logs [service] [-f]` | The server's journal and the containers' logs |
 | `poke update` | Update from GitHub (below) |
+| `poke doctor [--fix]` | Checks everything and says how to fix what's wrong (below) |
+| `poke backup` / `poke restore <file>` | A full backup, and putting one back (below) |
 
 ## 5. Updates
 
@@ -143,7 +145,30 @@ Nightly updates: `poke config update.auto true`. The `poke-update.timer` runs `p
 
 The checkout must have no local changes (`poke update` refuses otherwise).
 
-## 6. Firewall
+## 6. Doctor, backups and restoring
+
+`poke doctor` checks the machine (as the preflight does), the server and `poke.service`, the API,
+the key files' permissions, the logins (it warns 30 days before the Claude token expires: run
+`poke login` and pick Claude to make a new one), the models, the Docker services, memory, the
+tunnel from outside, Bark (it sends a test push) and the update setup. Each problem comes with
+its fix. `poke doctor --fix` runs the fixes it can do itself; `--json` prints the checks for
+scripts.
+
+`poke backup` writes `~/poke/backups/poke-<date>.tar.gz` (the newest 10 are kept), or the file
+you name. It can run while Poke is running. It contains the databases, **the master key**, the
+workspace, library and skills, settings, Bark's data and, when memory is running, Honcho's
+database. Anyone with the file can read the vault: keep it somewhere only you can reach (it's
+written 0600). Copy it off the machine; a backup on the same disk doesn't survive the disk.
+
+To move Poke to a new machine: install it (step 1), copy the backup over, run
+`poke restore <file>`, then `poke setup` for anything the new machine still needs (Docker
+services, the tunnel, the service). If memory wasn't set up yet when you restored, run
+`poke setup --only memory` and then `poke restore <file> --memory`.
+
+`poke restore` asks first (`--yes` skips that), stops Poke, puts the backup in place and starts
+Poke again. What it replaced is moved to `~/poke/restore-previous-<time>/`, not deleted.
+
+## 7. Firewall
 
 Nothing needs to be reachable from the LAN or the internet: the tunnel connects out, and the
 laptop's browser relay goes over Tailscale. With ufw:
@@ -160,7 +185,7 @@ If you also need SSH from the LAN before Tailscale is up, add `sudo ufw allow Op
 remove it later). The Docker services publish their ports on 127.0.0.1 only, so Docker's own
 firewall rules don't expose them.
 
-## 7. Files
+## 8. Files
 
 | Path | What |
 |---|---|
@@ -169,6 +194,7 @@ firewall rules don't expose them.
 | `~/poke/data/vault.db` | The vault (encrypted with the master key) |
 | `~/poke/keys/master.key` | The master key (0600). Back it up somewhere safe: without it the vault can't be read |
 | `~/poke/data/backups/` | `poke.db` copies made by `poke update` |
+| `~/poke/backups/` | Full backups from `poke backup` (0600, include the master key) |
 | `~/poke/services/` | Docker data and the rendered env files (0600) |
 | `~/poke/updates/` | App updates and native builds the server hands out |
 | `~/poke/logs/` | The server's log |

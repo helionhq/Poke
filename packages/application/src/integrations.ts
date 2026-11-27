@@ -19,7 +19,7 @@ import {
   type ToolSpec,
   type VaultPort,
 } from "@poke/domain";
-import type { ApprovalInput, ApprovalOutcome, ApprovalService } from "./approvals.js";
+import { type ApprovalInput, type ApprovalOutcome, type ApprovalService, approvalKey } from "./approvals.js";
 import type { BlockService, ConnectionStarter } from "./blocks.js";
 import { handler, json, text, type ToolGateway } from "./tools/gateway.js";
 import type { SecretResolver } from "./tools/secrets.js";
@@ -566,9 +566,10 @@ export class IntegrationService implements ConnectionStarter {
       const request = repos.approvals.get(o.approvalId);
       const original = (request?.presentation?.props ?? {}) as Record<string, unknown>;
       const changed = Object.entries(o.final).filter(([key, value]) => original[key] !== value);
-      if (request && ctx.agent.kind === "executor")
+      const key = approvalKey(ctx.agent);
+      if (request && key)
         approvals.allowEdited(
-          ctx.agent.taskId,
+          key,
           request.integration,
           request.tool,
           changed.map(([, value]) => String(value)),
