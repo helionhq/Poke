@@ -18,6 +18,16 @@ Milestones from the brief (section 26). Each ends with tests green, docs updated
 | 12 | Polish pass | ✅ done |
 
 ## Log
+### Review fixes (after milestone 12)
+- Fixed the 16 findings from the PR review: revoked devices lose open sockets; approvals and log
+  lines are redacted whole; side chat Bash gets its vault variables; one-time codes survive a
+  parked call; poke update fetches a missing iPhone build; backups are private while written; the
+  app keeps its history cursor, side chats across reconnects, frames during a refetch, streamed
+  text (no repeats, nothing lost on reconnect) and deep links to unloaded messages; need cards
+  are on the reply before its push; MCP servers that fail at boot are retried.
+- Tests: 243 Vitest, 22 Jest. Not covered by a unit test (React hooks; check on a phone): the
+  stable side chat subscription, frames held during a refetch, the deep-link jump.
+
 ### Milestone 12 — polish pass
 - `poke doctor`: every check grouped (machine, Poke, logins, models, Docker, memory, tunnel,
   notifications, updates, backup), with the fix for each; `--fix` runs the ones it can, `--json`

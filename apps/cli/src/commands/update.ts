@@ -169,6 +169,12 @@ export async function updateCommand(ctx: Context, opts: UpdateOptions): Promise<
 
   if (target === current && !opts.honcho) {
     p.log.success(ok(`Poke is up to date (${current.slice(0, 7)})`));
+    // A fresh install, or a run after CI finished the native build: fetch it if it isn't here.
+    try {
+      reportIpa(await fetchIpa(root, ctx.paths, resolveRuntime(root)));
+    } catch (error) {
+      p.log.warn(warn(`Couldn't check for the iPhone build: ${(error as Error).message}`));
+    }
     return;
   }
   if (
@@ -230,15 +236,7 @@ async function applyUpdate(ctx: Context, previous: string, opts: UpdateOptions):
     spin.stop(ok(`App update ready (runtime ${ota.runtime.slice(0, 12)})`));
 
     // 2. The native build, if this fingerprint has one on GitHub.
-    const ipa = await fetchIpa(root, paths, ota.runtime);
-    if (ipa === "have") p.log.info(dim("The iPhone app's native build is unchanged."));
-    else if (ipa === "missing")
-      p.log.warn(
-        warn(
-          "This version changes the iPhone app's native code, and CI hasn't published that build yet. Run poke update again once the release workflow finishes.",
-        ),
-      );
-    else p.log.success(ok(`New iPhone build ${ipa} is in SideStore`));
+    reportIpa(await fetchIpa(root, paths, ota.runtime));
 
     // 3. Stop, back up, migrate.
     if (serverRunsUnderSystemd()) await serviceCommand(ctx, "stop", "poke");
@@ -327,14 +325,7 @@ const KEEP_OTA = 3;
 /** `expo export` into ~/poke/updates/ota/<runtime>/<ms>-<commit>/ (the server's UpdateStore layout). */
 export function exportOta(root: string, paths: PokePaths, commit: string): { runtime: string; dir: string } {
   const mobile = join(root, "apps", "mobile");
-  const resolved = sh("pnpm", ["exec", "expo-updates", "runtimeversion:resolve", "--platform", "ios"], {
-    cwd: mobile,
-    quiet: true,
-  });
-  must("Resolving the app's runtime version", resolved);
-  const runtime = (JSON.parse(resolved.out.slice(resolved.out.indexOf("{"))) as { runtimeVersion: string })
-    .runtimeVersion;
-  if (!/^[A-Za-z0-9._-]{1,128}$/.test(runtime)) throw new Error(`Unexpected runtime version ${runtime}`);
+  const runtime = resolveRuntime(root);
 
   const createdAt = Date.now();
   const base = join(paths.updates, "ota", runtime);
@@ -361,6 +352,30 @@ export function exportOta(root: string, paths: PokePaths, commit: string): { run
   prune(base, KEEP_OTA);
   rmSync(join(paths.updates, "tmp"), { recursive: true, force: true });
   return { runtime, dir };
+}
+
+/** The app's runtime version (its native fingerprint) at this checkout. */
+function resolveRuntime(root: string): string {
+  const resolved = sh("pnpm", ["exec", "expo-updates", "runtimeversion:resolve", "--platform", "ios"], {
+    cwd: join(root, "apps", "mobile"),
+    quiet: true,
+  });
+  must("Resolving the app's runtime version", resolved);
+  const runtime = (JSON.parse(resolved.out.slice(resolved.out.indexOf("{"))) as { runtimeVersion: string })
+    .runtimeVersion;
+  if (!/^[A-Za-z0-9._-]{1,128}$/.test(runtime)) throw new Error(`Unexpected runtime version ${runtime}`);
+  return runtime;
+}
+
+function reportIpa(ipa: string): void {
+  if (ipa === "have") p.log.info(dim("The iPhone app's native build is here."));
+  else if (ipa === "missing")
+    p.log.warn(
+      warn(
+        "CI hasn't published the iPhone build for this version yet. Run poke update again once the release workflow finishes.",
+      ),
+    );
+  else p.log.success(ok(`New iPhone build ${ipa} is in SideStore`));
 }
 
 // ── the native build ─────────────────────────────────────────────────────────────────────────

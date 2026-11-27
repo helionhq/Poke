@@ -460,7 +460,7 @@ beforeEach(() => {
     clock,
     log: silentLogger,
     agents,
-    redact: (value) => value,
+    redact: (value) => redactor.redactValue(value),
   });
   approvals.start();
   blocks = new BlockService({
@@ -666,6 +666,32 @@ describe("Poke turns", () => {
       "show_draft",
       "wait",
     ]);
+  });
+
+  it("streams segments with the break between them, and a mid-reply snapshot holds all text so far", async () => {
+    await setPoke();
+    const seen: string[] = [];
+    const off = kernel.hub.subscribe((frame) => {
+      if (frame.kind === "live" && frame.event.type === "message.delta")
+        seen.push(messageText(poke.streaming()[0]!));
+    });
+    claude.script = () => [
+      { type: "text.delta", text: "Hello" },
+      { type: "text.done", text: "Hello" },
+      { type: "text.delta", text: "Wor" },
+      { type: "text.delta", text: "ld" },
+      { type: "text.done", text: "World" },
+    ];
+    say("hi");
+    await until(() => pokeMessages().find((m) => m.status === "complete"));
+    off();
+    expect(live.filter((e) => e.type === "message.delta").map((e) => e.text)).toEqual([
+      "Hello",
+      "\n\nWor",
+      "ld",
+    ]);
+    expect(seen).toEqual(["Hello", "Hello\n\nWor", "Hello\n\nWorld"]);
+    expect(messageText(pokeMessages()[0]!)).toBe("Hello\n\nWorld");
   });
 
   it("steers a running turn with a new message instead of queueing it", async () => {
@@ -1051,6 +1077,30 @@ describe("agents", () => {
     expect(blocks.get(block.id).fallback).toBe("Connect Notion: not connected");
   });
 
+  it("pushes an agent's need as time-sensitive, with its card already on Poke's reply", async () => {
+    notifications.start();
+    const result = await startAgentTurn();
+    const { agentId } = JSON.parse(result().output[0]!.text) as { agentId: string };
+    await idle();
+    await new Promise((r) => setTimeout(r, 10));
+    notifier.sent.length = 0;
+    claude.script = () => reply("Lilia needs your Resy password to book.");
+    await gateway.invoker("executor").invoke("ask_poke", secretArgs, {
+      agent: { kind: "executor", taskId: agentId },
+      callId: "s1",
+      signal: signal(),
+    });
+    await idle();
+    await until(() => notifier.sent.length > 0);
+    await new Promise((r) => setTimeout(r, 10));
+    expect(notifier.sent).toEqual([
+      expect.objectContaining({ body: "Lilia needs your Resy password to book.", level: "timeSensitive" }),
+    ]);
+    const holder = pokeMessages().find((m) => m.parts.some((p) => p.type === "block"))!;
+    expect(messageText(holder)).toBe("Lilia needs your Resy password to book.");
+    expect(kernel.db.blocks.byTask(agentId)).toHaveLength(1);
+  });
+
   it("shows a need's block on its own when Poke can't reply", async () => {
     const result = await startAgentTurn();
     const { agentId } = JSON.parse(result().output[0]!.text) as { agentId: string };
@@ -1218,6 +1268,31 @@ describe("approvals", () => {
     expect(big.park?.needId).toBeDefined();
     await until(() => kernel.db.blocks.byTask(agentId).length === 2);
     await idle();
+  });
+
+  it("keeps a filled-in secret out of every part of the OK it saves and shows", async () => {
+    const value = "pw-very-secret-123";
+    secrets.map.set("qwen.apiKey", value);
+    registerGated("site_login", (args) => ({
+      integration: "site",
+      tool: "login",
+      title: `Sign in with ${String(args.password)}`,
+      details: [{ label: "Password", value: String(args.password) }],
+      reason: `Uses ${String(args.password)}`,
+      presentation: { kind: "action", props: { title: `Sign in with ${String(args.password)}` } },
+    }));
+    const agentId = await startAgent();
+    claude.script = () => reply("Needs your OK.");
+    const parked = await gateway
+      .invoker("executor")
+      .invoke("site_login", { password: value }, ctxFor(agentId, "p1"));
+    expect(parked.park).toBeDefined();
+    await idle();
+    const stored = JSON.stringify(kernel.db.approvals.pending());
+    expect(stored).toContain("Sign in with [vault:system]");
+    expect(stored).not.toContain(value);
+    expect(JSON.stringify(kernel.db.blocks.byTask(agentId))).not.toContain(value);
+    expect(JSON.stringify(live)).not.toContain(value);
   });
 
   it("shows a send as a draft, passes on the edited text, and expires the OK when the agent is cancelled", async () => {
@@ -1430,6 +1505,25 @@ describe("approvals", () => {
 
         await service.removeMcpServer("fake");
         expect(gateway.has("mcp__fake__echo")).toBe(false);
+      } finally {
+        await service.close();
+      }
+    });
+
+    it("keeps trying a server that couldn't start, until it can", async () => {
+      const service = integrations();
+      try {
+        // Its key isn't in the vault yet: the first try fails, and nothing throws.
+        const server = await service.addMcpServer({
+          id: "later",
+          transport: fakeServer({ FAKE_TOKEN: "{{vault:later.token}}" }),
+        });
+        expect(server).toMatchObject({ connected: false });
+        expect(gateway.has("mcp__later__echo")).toBe(false);
+        vault.put({ name: "later", kind: "api_key", secrets: { token: "t0k-later" } });
+        timers.fire();
+        await until(() => gateway.has("mcp__later__echo"));
+        expect(service.mcpServers().find((s) => s.id === "later")).toMatchObject({ connected: true });
       } finally {
         await service.close();
       }

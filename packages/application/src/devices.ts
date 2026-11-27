@@ -23,6 +23,7 @@ export interface PairingCodeIssued {
  */
 export class DeviceService {
   #failures: number[] = [];
+  #onRevoked = new Map<string, Set<() => void>>();
 
   constructor(
     private readonly devices: DeviceRepository,
@@ -109,7 +110,27 @@ export class DeviceService {
     if (!device) throw new DomainError("not_found", "Device not found");
     const revoked = { ...device, revokedAt: device.revokedAt ?? this.clock.now() };
     this.devices.save(revoked);
+    // Open sockets were authenticated when they opened: end them now.
+    for (const close of [...(this.#onRevoked.get(id) ?? [])]) {
+      try {
+        close();
+      } catch {
+        // one listener failing doesn't keep the others open
+      }
+    }
+    this.#onRevoked.delete(id);
     return revoked;
+  }
+
+  /** Calls `close` when this device is revoked (open sockets). Returns the unsubscribe. */
+  onRevoked(id: string, close: () => void): () => void {
+    let set = this.#onRevoked.get(id);
+    if (!set) this.#onRevoked.set(id, (set = new Set()));
+    set.add(close);
+    return () => {
+      set.delete(close);
+      if (set.size === 0 && this.#onRevoked.get(id) === set) this.#onRevoked.delete(id);
+    };
   }
 
   #createDevice(input: {

@@ -114,6 +114,30 @@ describe("poke-server core", () => {
     expect((await app.inject({ url: "/v1/thread", headers: auth })).statusCode).toBe(401);
   });
 
+  it("closes a revoked device's open event stream", async () => {
+    const token = await pair();
+    const keep = await pair();
+    const address = await app.listen({ host: "127.0.0.1", port: 0 });
+    const ws = new WebSocket(`${address.replace("http", "ws")}/v1/events?since=0`, {
+      headers: { authorization: `Bearer ${token}` },
+    });
+    const closed = new Promise<number>((resolve) => ws.on("close", (code) => resolve(code)));
+    await new Promise<void>((resolve, reject) => {
+      ws.on("message", (raw) => {
+        if ((JSON.parse(raw.toString()) as ServerFrame).t === "snapshot") resolve();
+      });
+      ws.on("error", reject);
+    });
+    const id = kernel.devices.authenticate(token)!.id;
+    const res = await app.inject({
+      method: "DELETE",
+      url: `/v1/devices/${id}`,
+      headers: { authorization: `Bearer ${keep}` },
+    });
+    expect(res.statusCode).toBe(200);
+    expect(await closed).toBe(4401);
+  });
+
   it("sends messages idempotently and pages the thread", async () => {
     const auth = { authorization: `Bearer ${await pair()}` };
     const send = (text: string, clientMessageId: string) =>

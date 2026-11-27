@@ -17,6 +17,7 @@ import { buildApp } from "./http/app.js";
 import { resolvePaths } from "./infra/paths.js";
 import { createKernel, type Kernel } from "./kernel.js";
 import { servicesFromKernel } from "./services.js";
+import { logRedactor } from "./infra/logger.js";
 import { type AgentStack, openAgentStack, openModelStack } from "./stack.js";
 
 class EchoSession implements ConversationSession {
@@ -72,16 +73,17 @@ let stack: AgentStack;
 let publicApp: FastifyInstance;
 let adminApp: FastifyInstance;
 let token: string;
+const stackOptions = {
+  runtimes: { "claude-agent-sdk": echo, "pi-ai": echo },
+  claudeLive: false,
+  validateLogins: false,
+  modelGateway: { host: "127.0.0.1", port: 0 },
+};
 
 beforeEach(async () => {
   home = mkdtempSync(join(tmpdir(), "poke-stack-"));
   kernel = createKernel({ paths: resolvePaths(home) });
-  stack = await openAgentStack(kernel, {
-    runtimes: { "claude-agent-sdk": echo, "pi-ai": echo },
-    claudeLive: false,
-    validateLogins: false,
-    modelGateway: { host: "127.0.0.1", port: 0 },
-  });
+  stack = await openAgentStack(kernel, stackOptions);
   const services = servicesFromKernel(kernel, { version: "test", stack });
   publicApp = await buildApp(services, "public");
   adminApp = await buildApp(services, "admin");
@@ -592,6 +594,17 @@ describe("agent stack over HTTP", () => {
     });
     expect(deleted.json()).toEqual({ deleted: true });
     expect(stack.vault.get("github")).toBeUndefined();
+  });
+
+  it("scrubs vault values from log lines while the vault is open", async () => {
+    const secret = "ghp_logline1234567890XYZ";
+    stack.vault.put({ name: "github", kind: "api_key", secrets: { token: secret } });
+    await until(() => stack.secrets().some((s) => s.name === "github"));
+    const line = JSON.stringify({ msg: "poll failed", error: `upstream said ${secret}` });
+    expect(logRedactor.scrub(line)).toBe(line.replace(secret, "[vault:github]"));
+    await stack.shutdown();
+    expect(logRedactor.scrub("plain")).toBe("plain");
+    stack = await openAgentStack(kernel, stackOptions); // for afterEach
   });
 
   it("fills placeholders only for tools that act outside Poke, and shows [vault:name] back", async () => {

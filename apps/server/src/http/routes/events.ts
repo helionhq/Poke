@@ -68,8 +68,13 @@ export function registerEventsSocket(app: FastifyInstance, s: Services): void {
     send({ t: "snapshot", streaming: s.live.streaming(), activity: s.live.activity("main") });
     s.presence.update(connectionId, deviceId, "foreground");
 
+    const stopWatching =
+      principal.kind === "device"
+        ? s.devices.onRevoked(principal.device.id, () => socket.close(4401, "unauthorized"))
+        : () => {};
     socket.on("message", (raw: WebSocket.RawData) => handleClientFrame(raw));
     socket.on("close", () => {
+      stopWatching();
       unsubscribe();
       s.presence.remove(connectionId);
     });

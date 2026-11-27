@@ -120,8 +120,18 @@ export function createBackup(input: {
       ...(honcho ? { honcho: true } : {}),
     };
     writeFileSync(join(stage, "manifest.json"), `${JSON.stringify(manifest, null, 2)}\n`);
-    tar(["-czf", input.out, "-C", stage, "."]);
-    chmodSync(input.out, 0o600);
+    // The archive holds the master key: it is private from its first byte. tar writes into a
+    // 0600 file made beforehand, which only takes the real name once it's complete.
+    const partial = `${input.out}.partial-${process.pid}`;
+    writeFileSync(partial, "", { mode: 0o600, flag: "wx" });
+    try {
+      chmodSync(partial, 0o600);
+      tar(["-czf", partial, "-C", stage, "."]);
+      renameSync(partial, input.out);
+    } catch (error) {
+      rmSync(partial, { force: true });
+      throw error;
+    }
     return manifest;
   } finally {
     rmSync(stage, { recursive: true, force: true });

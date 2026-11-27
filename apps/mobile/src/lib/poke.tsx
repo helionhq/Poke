@@ -4,6 +4,7 @@ import {
   PokeClient,
   type LiveEvent,
   type PersistedEvent,
+  type ServerFrame,
   type StreamStatus,
   ThreadStore,
 } from "@poke/client";
@@ -149,10 +150,31 @@ function Connected({
     return { cache, client, store, outbox };
   }, [session]);
 
+  // Frames that arrive while a fresh page loads are held, then applied on top of it: the reset
+  // would otherwise wipe them, and the socket won't send them again.
+  const held = useRef<ServerFrame[] | undefined>(undefined);
+  const apply = useCallback(
+    (frame: ServerFrame) => {
+      if (held.current) held.current.push(frame);
+      else if (core.store.apply(frame) === "refetch") void refetchRef.current().catch(() => {});
+    },
+    [core],
+  );
+  const refetchRef = useRef<() => Promise<void>>(async () => {});
   const refetch = useCallback(async () => {
-    const page = await core.client.messages({ limit: 50 });
-    core.store.reset(page);
-  }, [core]);
+    if (held.current) return; // one already running keeps everything that arrives
+    const frames: ServerFrame[] = [];
+    held.current = frames;
+    try {
+      const page = await core.client.messages({ limit: 50 });
+      core.store.reset(page);
+    } finally {
+      held.current = undefined;
+      // Events up to the page's seq are skipped by the store; newer ones and live frames apply.
+      for (const frame of frames) apply(frame);
+    }
+  }, [core, apply]);
+  refetchRef.current = refetch;
 
   useEffect(() => {
     const { cache, client, store, outbox } = core;
@@ -170,9 +192,7 @@ function Connected({
         if (s === "open") void outbox.flush();
         if (s === "unauthorized") void signOut();
       },
-      onFrame: (frame) => {
-        if (store.apply(frame) === "refetch") void refetch().catch(() => {});
-      },
+      onFrame: apply,
     });
     // Nothing cached yet: load the newest page, then stream from its seq.
     if (store.latestSeq === 0)
@@ -208,17 +228,22 @@ function Connected({
       app.remove();
       stream.stop();
     };
-  }, [core, session, signOut, refetch]);
+  }, [core, session, signOut, refetch, apply]);
+
+  // Stable across status changes: screens subscribe in effects that clean up when it changes.
+  const onEvent = useCallback((fn: Listener) => {
+    listeners.current.add(fn);
+    return () => {
+      listeners.current.delete(fn);
+    };
+  }, []);
 
   const poke: Poke = useMemo(
     () => ({
       session,
       ...core,
       status,
-      onEvent: (fn) => {
-        listeners.current.add(fn);
-        return () => listeners.current.delete(fn);
-      },
+      onEvent,
       send: async (input) => {
         await core.outbox.enqueue(input);
       },
@@ -230,7 +255,7 @@ function Connected({
       },
       signOut,
     }),
-    [session, core, status, refetch, signOut],
+    [session, core, status, refetch, signOut, onEvent],
   );
 
   return <PokeContext.Provider value={{ phase: "ready", poke }}>{children}</PokeContext.Provider>;

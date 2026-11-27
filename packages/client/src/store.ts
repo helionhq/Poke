@@ -187,12 +187,25 @@ export class ThreadStore {
 
   /** An older page (scrolling up) or the cached thread on launch. */
   addPage(page: Pick<ThreadPage, "messages" | "blocks" | "traces" | "before">): void {
-    for (const m of page.messages) if (m.scope === this.scope) this.#putMessage(m);
-    for (const b of page.blocks) this.#blocks.set(b.id, b);
-    for (const t of page.traces) this.#traces.set(t.id, t);
+    this.#put(page);
     this.#oldest = page.before;
     this.#hasOlder = page.before !== undefined;
     this.#changed();
+  }
+
+  /**
+   * Messages from a lookup (`around` a deep-linked message). Scrolling up still continues from
+   * the oldest history page, so the cursor stays as it is.
+   */
+  addLookup(page: Pick<ThreadPage, "messages" | "blocks" | "traces">): void {
+    this.#put(page);
+    this.#changed();
+  }
+
+  #put(page: Pick<ThreadPage, "messages" | "blocks" | "traces">): void {
+    for (const m of page.messages) if (m.scope === this.scope) this.#putMessage(m);
+    for (const b of page.blocks) this.#blocks.set(b.id, b);
+    for (const t of page.traces) this.#traces.set(t.id, t);
   }
 
   /** Steps for a trace the app opened (GET /v1/traces/:id). */
@@ -249,11 +262,16 @@ export class ThreadStore {
   #event(event: PersistedEvent): void {
     switch (event.type) {
       case "message.created":
-      case "message.updated":
+      case "message.updated": {
         if (event.message.scope !== this.scope) return;
+        const before = this.#messages.get(event.message.id);
         this.#putMessage(event.message);
-        if (event.message.status !== "streaming") this.#deltas.delete(event.message.id);
+        // New text means a finished segment now holds what was streamed so far. An update that
+        // only adds a card mid-segment leaves the text as it was, and the deltas still count.
+        if (event.message.status !== "streaming" || !before || textOf(before) !== textOf(event.message))
+          this.#deltas.delete(event.message.id);
         return;
+      }
       case "block.created":
       case "block.updated":
         if (event.block.scope === this.scope) this.#blocks.set(event.block.id, event.block);
@@ -313,4 +331,8 @@ export class ThreadStore {
     this.#rows = undefined;
     for (const fn of this.#listeners) fn();
   }
+}
+
+function textOf(message: Message): string {
+  return message.parts.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n\n");
 }

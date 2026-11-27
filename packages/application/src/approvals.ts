@@ -158,15 +158,23 @@ export class ApprovalService implements ApprovalDecider {
       return { output: [], park: { needId } }; // a replayed call
 
     const now = this.deps.clock.now();
-    const args = this.deps.redact(input.args);
+    // Executor saw the filled-in call, so every field it describes it with can hold a secret.
+    const shown = this.deps.redact({
+      title: input.title,
+      details: input.details ?? [],
+      reason: input.reason,
+      args: input.args,
+      presentation: input.presentation,
+      offer: input.offer,
+    });
     const request: ApprovalRequest = {
       id: this.deps.ids.next("apr"),
       integration: input.integration,
       tool: input.tool,
-      title: input.title,
-      details: input.details ?? [],
-      ...(input.reason ? { reason: input.reason } : {}),
-      args,
+      title: shown.title,
+      details: shown.details,
+      ...(shown.reason ? { reason: shown.reason } : {}),
+      args: shown.args,
       argsHash: argsHash(input.args),
       resume: input.resume,
       requester:
@@ -174,8 +182,8 @@ export class ApprovalService implements ApprovalDecider {
           ? { kind: "task", taskId: agent.taskId }
           : { kind: "sidechat", sideChatId: agent.sideChatId },
       status: "pending",
-      ...(input.presentation ? { presentation: input.presentation } : {}),
-      ...(input.offer ? { offer: input.offer } : {}),
+      ...(shown.presentation ? { presentation: shown.presentation } : {}),
+      ...(shown.offer ? { offer: shown.offer } : {}),
       createdAt: now,
     };
     if (this.#takeEdited(key, input)) {

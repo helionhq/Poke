@@ -131,6 +131,8 @@ interface TurnState {
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 const SESSION_KEY = "poke";
+/** Between a reply's text segments (before and after a tool call), saved and streamed alike. */
+const SEGMENT_BREAK = "\n\n";
 
 /**
  * Poke itself: one never-ending conversation over the thread. User messages, agent reports and
@@ -146,6 +148,8 @@ export class InteractionOrchestrator {
   readonly #queue: Input[] = [];
   #busy = false;
   #turn: TurnState | undefined;
+  /** Agents' cards already shown (on the reply, before the turn's own fallback). */
+  readonly #shownNeeds = new WeakSet<object>();
   #activity: AgentActivity = "idle";
   #idle: { cancel(): void } | undefined;
   #cacheLifetime: CacheLifetime = "unknown";
@@ -178,8 +182,15 @@ export class InteractionOrchestrator {
 
   /** In-flight state for clients that connect mid-turn. */
   streaming(): Message[] {
-    const reply = this.#turn?.reply;
-    return reply && reply.status === "streaming" ? [reply] : [];
+    const turn = this.#turn;
+    const reply = turn?.reply;
+    if (!turn || !reply || reply.status !== "streaming") return [];
+    if (!turn.streamed) return [reply];
+    // The text so far: what's committed plus the segment still streaming, exactly as the deltas
+    // built it, so later deltas continue it.
+    const copy = structuredClone(reply);
+    setText(copy, [...turn.segments, turn.streamed].join(SEGMENT_BREAK));
+    return [copy];
   }
 
   /** A turn or compaction is running, or input is waiting for one. */
@@ -336,6 +347,10 @@ export class InteractionOrchestrator {
         else this.#onTurnEvent(event, turn);
       }
     } finally {
+      // Agents' cards go on the reply before it's published as complete, so the push about it
+      // knows he's needed. A turn that said nothing gets them in a message of their own later.
+      if (turn.reply && (turn.segments.length > 0 || turn.streamed.trim()))
+        this.#attachNeedBlocks(items, turn.reply);
       this.#finishReply(turn);
       this.#turn = undefined;
     }
@@ -348,10 +363,13 @@ export class InteractionOrchestrator {
    * own when Poke couldn't reply, so the agent is never stuck behind a failed turn.
    */
   #attachNeedBlocks(items: Input[], reply: Message | undefined): void {
-    const pending = items.flatMap((i) => (i.kind === "system" && i.blocks ? i.blocks : []));
+    const pending = items
+      .flatMap((i) => (i.kind === "system" && i.blocks ? i.blocks : []))
+      .filter((block) => !this.#shownNeeds.has(block));
     if (pending.length === 0 || this.#closed) return;
     let target = reply?.scope === "main" ? reply : undefined;
     for (const block of pending) {
+      this.#shownNeeds.add(block);
       const task = this.deps.repos.tasks.get(block.taskId);
       if (task?.status !== "waiting" || task.need?.id !== block.needId) continue;
       try {
@@ -427,8 +445,10 @@ export class InteractionOrchestrator {
         return;
       case "text.delta": {
         const reply = this.#ensureReply(turn);
+        // A new segment after earlier ones starts with the break the saved text will have.
+        const text = !turn.streamed && turn.segments.length ? SEGMENT_BREAK + event.text : event.text;
         turn.streamed += event.text;
-        this.deps.hub.live({ type: "message.delta", messageId: reply.id, scope: "main", text: event.text });
+        this.deps.hub.live({ type: "message.delta", messageId: reply.id, scope: "main", text });
         return;
       }
       case "text.done": {

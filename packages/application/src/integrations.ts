@@ -55,6 +55,7 @@ const CONNECT_POLL_MS = 3_000;
 /** Executor drops a pending connection after 30 minutes. */
 const CONNECT_DEADLINE_MS = 30 * 60_000;
 const MCP_RECONNECT_MS = 30_000;
+const MCP_RETRY_MAX_MS = 10 * 60_000;
 const BROWSE_ID = "browse";
 
 interface LiveServer {
@@ -152,18 +153,21 @@ export class IntegrationService implements ConnectionStarter {
     return removed;
   }
 
-  async #connect(config: McpServerConfig): Promise<void> {
+  /** `failures`: failed attempts in a row before this one (the retry waits longer each time). */
+  async #connect(config: McpServerConfig, failures = 0): Promise<void> {
     await this.#disconnect(config.id);
     const live: LiveServer = { config, tools: [] };
     this.#servers.set(config.id, live);
-    // Headers and env may carry {{vault:…}} placeholders; they are filled in only here.
-    const prepared = this.deps.resolver.prepare(
-      `mcp:${config.id}`,
-      config.transport,
-      { kind: "poke" },
-      `mcp:${config.id}`,
-    );
+    let release = () => {};
     try {
+      // Headers and env may carry {{vault:…}} placeholders; they are filled in only here.
+      const prepared = this.deps.resolver.prepare(
+        `mcp:${config.id}`,
+        config.transport,
+        { kind: "poke" },
+        `mcp:${config.id}`,
+      );
+      release = prepared.release;
       const session = await this.deps.mcp.connect(prepared.args as McpServerConfig["transport"], {
         name: config.name,
       });
@@ -190,8 +194,13 @@ export class IntegrationService implements ConnectionStarter {
     } catch (error) {
       live.error = this.deps.gateway.interceptor.redact(errorText(error));
       this.deps.log.info({ server: config.id, error: live.error }, "MCP server unavailable");
+      // A server that starts after Poke (or a missing vault entry he adds later) gets more tries.
+      if (!this.#closed && this.#servers.get(config.id) === live) {
+        const wait = Math.min(MCP_RECONNECT_MS * 2 ** failures, MCP_RETRY_MAX_MS);
+        live.retry = this.deps.timers.setTimeout(() => void this.#connect(live.config, failures + 1), wait);
+      }
     } finally {
-      prepared.release();
+      release();
     }
   }
 

@@ -120,12 +120,16 @@ export class ToolGateway {
     let release = () => {};
     try {
       let parsed = tool.parse(args);
-      if (options.resolveSecrets && this.resolver) {
+      // A resumed call only settles what was paused (by its id): its placeholders were filled in
+      // the first time, and a one-time code may be gone by now.
+      if (options.resolveSecrets && this.resolver && !ctx.resume) {
         const prepared = this.resolver.prepare(name, parsed, ctx.agent, options.usedBy);
         parsed = prepared.args;
         release = prepared.release;
       }
       const result = await tool.run(parsed, ctx);
+      // Parked (waiting for an OK): the call hasn't happened yet, so nothing is used up.
+      if (result.park) release = () => {};
       this.log.debug(
         { tool: name, agent: describe(ctx.agent), ms: Date.now() - started, isError: result.isError },
         "tool call",

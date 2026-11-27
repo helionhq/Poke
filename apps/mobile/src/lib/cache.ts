@@ -59,8 +59,9 @@ export class Cache {
       messages,
       blocks: thread.blocks.filter((b) => keep.has(b.messageId)),
       traces: thread.traces.filter((t) => keep.has(t.messageId)),
-      // The oldest cached message is where scrolling up continues from.
-      ...(messages[0] ? { before: messages[0].id } : {}),
+      // The oldest cached message is where scrolling up continues from, as the server's cursor
+      // (`<createdAt>:<id>`, the same as a page's `before`).
+      ...(messages[0] ? { before: `${messages[0].createdAt}:${messages[0].id}` } : {}),
     });
   }
 

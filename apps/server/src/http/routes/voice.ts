@@ -73,21 +73,26 @@ export function registerVoiceRoutes(app: FastifyInstance, s: Services, _surface:
   );
 
   app.get("/v1/voice/dictate", { websocket: true, config: { auth: "device" } }, (socket, req) => {
-    if (!fullDevice(socket, req)) return;
+    if (!fullDevice(s, socket, req)) return;
     void dictate(s, socket);
   });
 
   app.get("/v1/voice/call", { websocket: true, config: { auth: "device" } }, (socket, req) => {
-    if (!fullDevice(socket, req)) return;
+    if (!fullDevice(s, socket, req)) return;
     void call(s, socket);
   });
 }
 
-function fullDevice(socket: WebSocket, req: FastifyRequest): boolean {
+/** Full-scope devices only; the socket closes as soon as its device is revoked. */
+function fullDevice(s: Services, socket: WebSocket, req: FastifyRequest): boolean {
   const principal = req.principal;
   if (!principal || (principal.kind === "device" && principal.device.scope !== "full")) {
     socket.close(4401, "unauthorized");
     return false;
+  }
+  if (principal.kind === "device") {
+    const stop = s.devices.onRevoked(principal.device.id, () => socket.close(4401, "unauthorized"));
+    socket.on("close", stop);
   }
   return true;
 }

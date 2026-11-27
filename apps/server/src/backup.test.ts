@@ -5,6 +5,7 @@ import {
   readdirSync,
   readFileSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -55,6 +56,9 @@ describe("backup and restore", () => {
       expect.arrayContaining(["data/poke.db", "keys", "library", "honcho.dump"]),
     );
     expect(manifest.contents).not.toContain("data/tts");
+    // Private from the start, and nothing half-written is left beside it.
+    if (process.platform !== "win32") expect(statSync(out).mode & 0o777).toBe(0o600);
+    expect(readdirSync(home).filter((name) => name.includes(".partial-"))).toEqual([]);
     expect(readBackupManifest(paths, out)).toMatchObject({ format: 1, commit: "abc1234", honcho: true });
 
     // Things change after the backup…

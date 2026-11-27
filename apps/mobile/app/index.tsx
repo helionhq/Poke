@@ -107,29 +107,30 @@ export default function ThreadScreen() {
     return out.reverse();
   }, [store.version, latestReply, working]);
 
-  // Deep link: poke://thread?message=… scrolls to that message and flashes it.
+  // Deep link: poke://thread?message=… scrolls to that message and flashes it. One that isn't
+  // loaded yet is fetched, and the jump happens once it's among the rows.
+  const [jumpTo, setJumpTo] = useState<string>();
   useEffect(() => {
     const id = params.message;
     if (!id) return;
-    const jump = () => {
-      const index = items.findIndex((i) => i.type === "row" && i.key === id);
-      if (index < 0) return false;
-      list.current?.scrollToIndex({ index, viewPosition: 0.5, animated: true });
-      setHighlight(id);
-      setTimeout(() => setHighlight(undefined), 2200);
-      return true;
-    };
-    if (!jump()) {
+    setJumpTo(id);
+    if (!items.some((i) => i.type === "row" && i.key === id)) {
       void poke.client.messages({ around: id, limit: 50 }).then(
-        (page) => {
-          store.addPage(page);
-          setTimeout(jump, 50);
-        },
-        () => {},
+        (page) => store.addLookup(page),
+        () => setJumpTo(undefined),
       );
     }
     router.setParams({ message: undefined });
   }, [params.message]);
+  useEffect(() => {
+    if (!jumpTo) return;
+    const index = items.findIndex((i) => i.type === "row" && i.key === jumpTo);
+    if (index < 0) return;
+    setJumpTo(undefined);
+    list.current?.scrollToIndex({ index, viewPosition: 0.5, animated: true });
+    setHighlight(jumpTo);
+    setTimeout(() => setHighlight(undefined), 2200);
+  }, [items, jumpTo]);
 
   // "+" on Routines or Skills: open the thread with a starter sentence to finish.
   useEffect(() => {

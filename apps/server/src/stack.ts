@@ -63,6 +63,7 @@ import {
   validateQwenKey,
 } from "@poke/runtime-pi-durable";
 import { openVault, type SodiumVault } from "@poke/vault-sodium";
+import { logRedactor } from "./infra/logger.js";
 import { ensureMasterKey, loadMasterKey } from "./infra/master-key.js";
 import { FsSkillFiles } from "./infra/skill-files.js";
 import type { Kernel } from "./kernel.js";
@@ -110,6 +111,17 @@ export async function openModelStack(kernel: Kernel, options: ModelStackOptions 
       }));
   }
   refresh();
+  // Every log line (journal and poke.log) passes through this while the vault is open, so an
+  // upstream error that echoes a secret is written as [vault:<name>].
+  const lineRedactor = new SecretRedactor(() => values);
+  const scrub = (text: string): string => {
+    try {
+      return lineRedactor.redact(text);
+    } catch {
+      return text;
+    }
+  };
+  logRedactor.scrub = scrub;
 
   const claudeConfigDir = join(paths.data, "claude");
   mkdirSync(claudeConfigDir, { recursive: true, mode: 0o700 });
@@ -141,7 +153,10 @@ export async function openModelStack(kernel: Kernel, options: ModelStackOptions 
     piModels,
     secrets: () => values,
     claudeConfigDir,
-    close: () => vault.close(),
+    close: () => {
+      if (logRedactor.scrub === scrub) logRedactor.scrub = (text) => text;
+      vault.close();
+    },
   };
 }
 

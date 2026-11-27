@@ -1,5 +1,6 @@
-import type { VaultEntry } from "@poke/domain";
+import type { ToolCallContext, ToolResultData, VaultEntry } from "@poke/domain";
 import { describe, expect, it } from "vitest";
+import { ToolGateway } from "./gateway.js";
 import { SecretRedactor } from "./redactor.js";
 import { envName, SecretResolver, shellPlaceholders } from "./secrets.js";
 
@@ -134,5 +135,47 @@ describe("SecretRedactor", () => {
     expect(redactor.redactValue({ key: "Bearer sk-sp-abcdef123456" })).toEqual({
       key: "Bearer [vault:system]",
     });
+  });
+});
+
+describe("ToolGateway with a gated call", () => {
+  it("keeps a one-time code while the call waits for an OK, and resumes without filling it again", async () => {
+    const { vault, used } = fakeVault();
+    const log = { debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, child: () => log };
+    const gateway = new ToolGateway(new SecretRedactor(() => []), log, new SecretResolver(vault));
+    const seen: unknown[] = [];
+    gateway.register(
+      {
+        spec: {
+          name: "gated",
+          description: "gated",
+          inputSchema: { type: "object" },
+          loading: "always",
+          callers: ["model"],
+          replay: "unsafe",
+        },
+        parse: (args) => args,
+        run: (args: unknown, ctx: ToolCallContext): ToolResultData => {
+          seen.push(args);
+          return ctx.resume
+            ? { output: [{ type: "text", text: "Done." }] }
+            : { output: [], park: { needId: "n1" } };
+        },
+      },
+      ["executor"],
+      { resolveSecrets: true, usedBy: "Executor" },
+    );
+    const ctx = { agent, callId: "c1", signal: new AbortController().signal };
+    const args = { code: "{{vault:resy.code.code}}" };
+    const parked = await gateway.invoke("executor", "gated", args, ctx);
+    expect(parked.park).toEqual({ needId: "n1" });
+    expect(seen[0]).toEqual({ code: "481516" });
+    expect(used).toEqual([]); // nothing happened yet, so the code isn't used up
+    const resumed = await gateway.invoke("executor", "gated", args, {
+      ...ctx,
+      resume: { needId: "n1", value: {} },
+    });
+    expect(resumed.isError).toBeFalsy();
+    expect(seen[1]).toEqual(args); // the resume settles the paused call; nothing is filled in again
   });
 });

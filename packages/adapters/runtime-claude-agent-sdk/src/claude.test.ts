@@ -1,3 +1,7 @@
+import { spawnSync } from "node:child_process";
+import { existsSync, mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type { Options, SDKMessage, SDKUserMessage } from "@anthropic-ai/claude-agent-sdk";
 import { AsyncQueue, CORE_TOOLS } from "@poke/agent-core";
 import { type RuntimeEvent, type SessionSpec, silentLogger } from "@poke/domain";
@@ -205,6 +209,80 @@ describe("Claude runtime options", () => {
     expect(fake.calls[0]!.options.tools).toEqual(["Bash", "Read", "Write", "Edit", "Glob", "Grep"]);
     expect(fake.calls[0]!.options.persistSession).toBe(false);
     await session.close();
+  });
+
+  it("gives a side chat's Bash its vault variables through a private file, never the command", async () => {
+    const configDir = mkdtempSync(join(tmpdir(), "poke-claude-"));
+    try {
+      const fake = fakeQuery((_m, out) => {
+        reply(out, ["ok"]);
+        result(out);
+      });
+      const value = "it's a $ecret";
+      let released = 0;
+      const session = await new ClaudeConversationRuntime({
+        token: () => "sk-ant-oat-test",
+        configDir,
+        log: silentLogger,
+        query: fake.fn,
+      }).openSession(
+        spec({
+          key: "sidechat:sc_1",
+          profile: "sidechat",
+          persist: false,
+          model: { role: "sidechat", provider: "anthropic", model: "claude-sonnet-5-5", updatedAt: 0 },
+          interceptor: {
+            prepare: async (_n, args) => ({
+              args: { ...(args as object), command: 'printf %s "${POKE_SECRET_SITE_TOKEN}"' },
+              env: { POKE_SECRET_SITE_TOKEN: value },
+              release: () => void released++,
+            }),
+            redact: (t) => t,
+            observe: () => {},
+          },
+        }),
+      );
+      await drain(session.startTurn({ text: "use it" }));
+      const hooks = fake.calls[0]!.options.hooks!;
+      const signal = { signal: new AbortController().signal };
+      const pre = await hooks.PreToolUse![0]!.hooks[0]!(
+        {
+          hook_event_name: "PreToolUse",
+          tool_name: "Bash",
+          tool_input: { command: "printf %s {{vault:site.token}}" },
+          tool_use_id: "tu_1",
+        } as never,
+        "tu_1",
+        signal,
+      );
+      const command = (pre as unknown as { hookSpecificOutput: { updatedInput: { command: string } } })
+        .hookSpecificOutput.updatedInput.command;
+      expect(command).not.toContain("$ecret");
+      const file = /\. '([^']+)'/.exec(command)![1]!;
+      expect(readFileSync(file, "utf8")).toContain("POKE_SECRET_SITE_TOKEN=");
+      if (process.platform !== "win32") expect(statSync(file).mode & 0o777).toBe(0o600);
+      // The shell reads the variable, then the file is gone before the command runs.
+      const ran = spawnSync("sh", ["-c", command], { encoding: "utf8" });
+      if (!ran.error) {
+        expect(ran.stdout).toBe(value);
+        expect(existsSync(file)).toBe(false);
+      }
+      await hooks.PostToolUse![0]!.hooks[0]!(
+        {
+          hook_event_name: "PostToolUse",
+          tool_name: "Bash",
+          tool_use_id: "tu_1",
+          tool_response: "",
+        } as never,
+        "tu_1",
+        signal,
+      );
+      expect(existsSync(file)).toBe(false);
+      expect(released).toBe(1);
+      await session.close();
+    } finally {
+      rmSync(configDir, { recursive: true, force: true });
+    }
   });
 
   it("refuses roles and providers the subscription isn't for, and a missing login", async () => {

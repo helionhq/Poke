@@ -281,3 +281,20 @@ redacted before they are stored.
   from Executor-gated calls, are logged like any other, and can't be decided by the side chat
   itself. Side chat Trace step labels are redacted like executors'. Closing the chat, or a server
   restart, expires anything still waiting.
+
+## Review fixes (after milestone 12)
+
+- **Revocation is immediate.** Revoking a device closes its open `/v1/events` and voice sockets,
+  not just future requests.
+- **Approvals are redacted whole.** Executor sees the filled-in call, so the title, details,
+  reason, presentation and "always allow" offer it describes it with are redacted along with the
+  arguments before an approval is saved, logged or shown.
+- **Log lines are scrubbed.** While the vault is open, every journal and `poke.log` line passes
+  through the vault redactor, so an upstream error that echoes a secret is written as
+  `[vault:<name>]`.
+- **Backups are private from the first byte.** The archive is written into a 0600 file made
+  beforehand and renamed into place when complete; a failed run removes it.
+- **One-time codes.** A gated call that's waiting for an OK doesn't use up a one-time code, and its
+  resume doesn't fill placeholders again.
+- **Side chat Bash secrets** go through a 0600 file the shell deletes before the command runs
+  (DECISIONS 118), never the command line.

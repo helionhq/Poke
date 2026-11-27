@@ -53,6 +53,36 @@ describe("ThreadStore", () => {
     expect(store.latestSeq).toBe(12);
   });
 
+  it("doesn't repeat a finished segment while the reply keeps streaming", () => {
+    const store = new ThreadStore();
+    store.reset({ messages: [], blocks: [], traces: [], latestSeq: 0 });
+    const live = (text: string): ServerFrame => ({
+      t: "live",
+      event: { type: "message.delta", messageId: "m1", scope: "main", text },
+    });
+    store.apply(ev(1, { type: "message.created", message: msg("m1", { status: "streaming", parts: [] }) }));
+    store.apply(live("Hello"));
+    // The segment finishes before a tool call: the update holds it, the reply still streams.
+    const first = msg("m1", { status: "streaming", parts: [{ type: "text", text: "Hello" }] });
+    store.apply(ev(2, { type: "message.updated", message: first }));
+    expect(store.text(store.message("m1")!)).toBe("Hello");
+    store.apply(live("\n\nThere"));
+    expect(store.text(store.message("m1")!)).toBe("Hello\n\nThere");
+    // A card added mid-segment leaves the text alone, so the streamed part stays.
+    const withCard = { ...first, parts: [...first.parts, { type: "block" as const, blockId: "b1" }] };
+    store.apply(ev(3, { type: "message.updated", message: withCard }));
+    expect(store.text(store.message("m1")!)).toBe("Hello\n\nThere");
+  });
+
+  it("keeps the history cursor when a deep link loads messages around one", () => {
+    const store = new ThreadStore();
+    store.reset({ messages: [msg("m50")], blocks: [], traces: [], latestSeq: 1, before: "50000:m50" });
+    store.addLookup({ messages: [msg("m3"), msg("m4")], blocks: [], traces: [] });
+    expect(store.oldestCursor).toBe("50000:m50");
+    expect(store.hasOlder).toBe(true);
+    expect(store.message("m3")).toBeDefined();
+  });
+
   it("ignores other scopes, keeps blocks and steps, and asks for a refetch on reset", () => {
     const store = new ThreadStore();
     const other: string[] = [];

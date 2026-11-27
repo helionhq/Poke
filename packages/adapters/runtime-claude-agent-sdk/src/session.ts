@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { join } from "node:path";
 import type {
   CanUseTool,
   HookCallback,
@@ -250,12 +252,24 @@ export class ClaudeSession implements ConversationSession {
     const preToolUse: HookCallback = async (input) => {
       if (input.hook_event_name !== "PreToolUse" || !builtins.includes(input.tool_name)) return {};
       const prepared = await spec.interceptor.prepare(input.tool_name, input.tool_input, agent);
-      this.#releases.set(input.tool_use_id, prepared.release);
-      if (JSON.stringify(prepared.args) === JSON.stringify(input.tool_input)) return {};
+      let args = prepared.args as Record<string, unknown>;
+      let release = prepared.release;
+      if (prepared.env && Object.keys(prepared.env).length && typeof args.command === "string") {
+        // Claude Code's Bash takes no per-call environment, and a value in the command would be in
+        // the transcript. The shell reads a private file that it deletes before the command runs.
+        const file = writeEnvFile(this.options.configDir, prepared.env);
+        args = { ...args, command: sourceEnvFile(file, args.command) };
+        release = () => {
+          rmSync(file, { force: true });
+          prepared.release();
+        };
+      }
+      this.#releases.set(input.tool_use_id, release);
+      if (JSON.stringify(args) === JSON.stringify(input.tool_input)) return {};
       return {
         hookSpecificOutput: {
           hookEventName: "PreToolUse",
-          updatedInput: prepared.args as Record<string, unknown>,
+          updatedInput: args,
         },
       };
     };
@@ -584,4 +598,26 @@ function textOf(content: ReadonlyArray<{ type: string; text?: string }>): string
     .filter((block) => block.type === "text" && typeof block.text === "string")
     .map((block) => block.text!)
     .join("");
+}
+
+/** Single-quoted for sh: the only thing that ends a single-quoted string is a quote. */
+export const shellQuote = (value: string): string => `'${value.split("'").join(`'"'"'`)}'`;
+
+/** A 0600 file of `export NAME='value'` lines in a 0700 folder next to Claude's own data. */
+export function writeEnvFile(configDir: string, env: Record<string, string>): string {
+  const dir = join(configDir, "tool-env");
+  mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const file = join(dir, `${randomUUID()}.sh`);
+  const lines = Object.entries(env).map(([name, value]) => {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new Error(`Bad variable name ${name}`);
+    return `export ${name}=${shellQuote(value)}`;
+  });
+  writeFileSync(file, `${lines.join("\n")}\n`, { mode: 0o600, flag: "wx" });
+  return file;
+}
+
+/** Reads the variables, deletes the file, then runs the command (or stops if the file is gone). */
+export function sourceEnvFile(file: string, command: string): string {
+  const path = shellQuote(file);
+  return `{ . ${path} && rm -f -- ${path}; } || exit 1\n${command}`;
 }
